@@ -9,10 +9,8 @@
   },
   "dependencies": {
     "telegraf": "^4.12.2",
-    "telegraf-session-pg": "^1.0.0",
     "pg": "^8.11.0",
-    "dotenv": "^16.0.3",
-    "express": "^4.18.2"
+    "dotenv": "^16.0.3"
   },
   "devDependencies": {
     "nodemon": "^2.0.22"

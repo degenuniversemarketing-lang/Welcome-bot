@@ -27,7 +27,7 @@ async function startBot() {
     // Start cleaning expired captchas
     setInterval(cleanExpiredCaptchas, 30000);
     
-    // Use long polling instead of webhook
+    // Use long polling
     await bot.launch();
     console.log('✅ Bot started with long polling');
 }
@@ -123,7 +123,6 @@ async function cleanExpiredCaptchas() {
                 console.log(`⏰ Expired: ${captcha.first_name} (${captcha.user_id}) in ${captcha.group_id}`);
             } catch (error) {
                 console.error('Error processing expired captcha:', error);
-                await db.deleteCaptcha(captcha.user_id, captcha.group_id).catch(() => {});
             }
         }
     } catch (error) {
@@ -163,6 +162,10 @@ async function checkGroupAdmin(ctx, groupId, userId) {
 // ============ GROUP ADMIN PANEL ============
 async function showGroupAdminPanel(ctx, groupId) {
     const settings = await db.getGroupSettings(groupId);
+    if (!settings) {
+        return ctx.reply('❌ Group settings not found. Please contact super admin.');
+    }
+    
     const admins = await db.getGroupAdmins(groupId);
     
     const adminList = admins.map(a => `👤 @${a.admin_username || a.admin_id}`).join('\n') || 'No additional admins';
@@ -230,8 +233,9 @@ bot.use(async (ctx, next) => {
 
 // ============ SUPER ADMIN COMMANDS ============
 bot.command('add', async (ctx) => {
+    // Check if private chat and super admin
     if (ctx.chat.type !== 'private' || ctx.from.id.toString() !== SUPER_ADMIN_ID) {
-        return;
+        return ctx.reply('❌ This command is only for super admin in private chat.');
     }
     
     const args = ctx.message.text.split(' ');
@@ -241,9 +245,22 @@ bot.command('add', async (ctx) => {
     
     const groupId = args[1];
     
+    // Validate group ID format
+    if (!groupId.startsWith('-100')) {
+        return ctx.reply('❌ Invalid group ID. Must start with -100');
+    }
+    
     try {
+        // Try to get chat info to verify group exists and bot is admin
         const chat = await bot.telegram.getChat(groupId);
         
+        // Check if bot is admin in the group
+        const botMember = await bot.telegram.getChatMember(groupId, ctx.botInfo.id);
+        if (!['administrator', 'creator'].includes(botMember.status)) {
+            return ctx.reply('❌ Bot must be an admin in the group first. Add bot as admin and try again.');
+        }
+        
+        // Add to database
         const added = await db.addGroup(groupId, chat.title || 'Unknown Group', ctx.from.id.toString());
         
         if (added) {
@@ -254,10 +271,11 @@ bot.command('add', async (ctx) => {
                 parse_mode: 'Markdown'
             });
         } else {
-            ctx.reply('❌ Group already exists or error adding.');
+            ctx.reply('❌ Group already exists in database.');
         }
     } catch (error) {
-        ctx.reply('❌ Failed to add group. Make sure bot is admin in the group.');
+        console.error('Error adding group:', error);
+        ctx.reply('❌ Failed to add group. Make sure:\n1. Group ID is correct\n2. Bot is admin in the group\n3. Group exists');
     }
 });
 
@@ -284,14 +302,22 @@ bot.command('globalstats', async (ctx) => {
     
     const stats = await db.getStats();
     
+    if (!stats) {
+        return ctx.reply('❌ Error fetching stats.');
+    }
+    
     let message = `🌍 **Global Statistics**\n\n`;
     message += `**Total Groups:** ${stats.totalGroups}\n`;
     message += `**Pending Captchas:** ${stats.pendingCaptchas}\n\n`;
     message += `**Groups List:**\n`;
     
-    stats.groups.forEach((group, index) => {
-        message += `${index + 1}. ${group.group_title || 'Unknown'} (${group.group_id}) - ${group.is_active ? '✅' : '❌'}\n`;
-    });
+    if (stats.groups.length === 0) {
+        message += 'No groups added yet.\n';
+    } else {
+        stats.groups.forEach((group, index) => {
+            message += `${index + 1}. ${group.group_title || 'Unknown'} (${group.group_id}) - ${group.is_active ? '✅' : '❌'}\n`;
+        });
+    }
     
     ctx.reply(message, { parse_mode: 'Markdown' });
 });
@@ -302,6 +328,12 @@ bot.start(async (ctx) => {
     if (ctx.chat.type === 'group' || ctx.chat.type === 'supergroup') {
         const groupId = ctx.chat.id.toString();
         const userId = ctx.from.id.toString();
+        
+        // Check if group is allowed
+        const allowed = await db.isGroupAllowed(groupId);
+        if (!allowed) {
+            return ctx.reply('❌ This group is not configured. Contact super admin to add it first.');
+        }
         
         // Check if user is admin
         const isAdmin = await checkGroupAdmin(ctx, groupId, userId);
@@ -349,6 +381,7 @@ bot.action(/edit_welcome_(.+)/, async (ctx) => {
     // Set session using in-memory store
     const session = getSession(ctx.from.id.toString());
     session.waitingForWelcome = groupId;
+    await ctx.answerCbQuery();
 });
 
 bot.action(/edit_type_(.+)/, async (ctx) => {
@@ -383,7 +416,11 @@ bot.action(/set_type_(.+)_(.+)/, async (ctx) => {
     await ctx.answerCbQuery(`✅ Captcha type set to ${captchaType}`);
     
     // Go back to panel
-    ctx.chat = { id: parseInt(groupId), type: 'group', title: ctx.chat?.title || 'Group' };
+    try {
+        await ctx.deleteMessage();
+    } catch (e) {}
+    
+    ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.callbackQuery.message.chat.title };
     await showGroupAdminPanel(ctx, groupId);
 });
 
@@ -418,7 +455,11 @@ bot.action(/set_diff_(.+)_(.+)/, async (ctx) => {
     await db.updateGroupSettings(groupId, { captcha_difficulty: difficulty });
     await ctx.answerCbQuery(`✅ Difficulty set to ${difficulty}`);
     
-    ctx.chat = { id: parseInt(groupId), type: 'group', title: ctx.chat?.title || 'Group' };
+    try {
+        await ctx.deleteMessage();
+    } catch (e) {}
+    
+    ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.callbackQuery.message.chat.title };
     await showGroupAdminPanel(ctx, groupId);
 });
 
@@ -439,6 +480,7 @@ bot.action(/edit_time_(.+)/, async (ctx) => {
     
     const session = getSession(ctx.from.id.toString());
     session.waitingForTimeout = groupId;
+    await ctx.answerCbQuery();
 });
 
 bot.action(/toggle_join_(.+)/, async (ctx) => {
@@ -454,7 +496,11 @@ bot.action(/toggle_join_(.+)/, async (ctx) => {
     await db.updateGroupSettings(groupId, { delete_join_message: newValue });
     await ctx.answerCbQuery(`✅ Delete join message: ${newValue ? 'ON' : 'OFF'}`);
     
-    ctx.chat = { id: parseInt(groupId), type: 'group', title: ctx.chat?.title || 'Group' };
+    try {
+        await ctx.deleteMessage();
+    } catch (e) {}
+    
+    ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.callbackQuery.message.chat.title };
     await showGroupAdminPanel(ctx, groupId);
 });
 
@@ -471,7 +517,11 @@ bot.action(/toggle_kick_(.+)/, async (ctx) => {
     await db.updateGroupSettings(groupId, { kick_on_timeout: newValue });
     await ctx.answerCbQuery(`✅ Kick on timeout: ${newValue ? 'ON' : 'OFF'}`);
     
-    ctx.chat = { id: parseInt(groupId), type: 'group', title: ctx.chat?.title || 'Group' };
+    try {
+        await ctx.deleteMessage();
+    } catch (e) {}
+    
+    ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.callbackQuery.message.chat.title };
     await showGroupAdminPanel(ctx, groupId);
 });
 
@@ -485,9 +535,13 @@ bot.action(/manage_admins_(.+)/, async (ctx) => {
     const admins = await db.getGroupAdmins(groupId);
     
     let message = `👥 **Group Admins**\n\n`;
-    admins.forEach((admin, index) => {
-        message += `${index + 1}. @${admin.admin_username || 'Unknown'} (${admin.admin_id})\n`;
-    });
+    if (admins.length === 0) {
+        message += `No admins found.\n`;
+    } else {
+        admins.forEach((admin, index) => {
+            message += `${index + 1}. @${admin.admin_username || 'Unknown'} (${admin.admin_id})\n`;
+        });
+    }
     message += `\nTo add an admin, they just need to use /start in this group.`;
     
     const keyboard = Markup.inlineKeyboard([
@@ -508,14 +562,11 @@ bot.action(/group_stats_(.+)/, async (ctx) => {
     
     const message = `
 📊 **Group Statistics**
-Group: ${ctx.chat?.title || 'This Group'}
+Group: ${ctx.callbackQuery.message.chat.title}
 
 **Overview:**
 👥 Total Admins: ${(await db.getGroupAdmins(groupId)).length}
 ⏳ Pending Captchas: ${stats.pendingCaptchas}
-
-**Your Groups:**
-${stats.groups.map((g, i) => `${i+1}. ${g.group_title}`).join('\n')}
     `;
     
     const keyboard = Markup.inlineKeyboard([
@@ -536,16 +587,21 @@ bot.action(/back_to_panel_(.+)/, async (ctx) => {
         return ctx.answerCbQuery('❌ You are not an admin of this group');
     }
     
-    ctx.chat = { id: parseInt(groupId), type: 'group', title: ctx.chat?.title || 'Group' };
+    try {
+        await ctx.deleteMessage();
+    } catch (e) {}
+    
+    ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.callbackQuery.message.chat.title };
     await showGroupAdminPanel(ctx, groupId);
 });
 
 // ============ TEXT HANDLERS ============
 bot.on('text', async (ctx) => {
+    // Skip if no session
     const session = getSession(ctx.from.id.toString());
     
     // Handle waiting for welcome text
-    if (session?.waitingForWelcome) {
+    if (session.waitingForWelcome) {
         const groupId = session.waitingForWelcome;
         
         if (ctx.message.text === '/cancel') {
@@ -564,13 +620,13 @@ bot.on('text', async (ctx) => {
         await ctx.reply('✅ Welcome text updated!');
         
         // Show panel again
-        ctx.chat = { id: parseInt(groupId), type: 'group', title: ctx.chat?.title || 'Group' };
+        ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
         await showGroupAdminPanel(ctx, groupId);
         return;
     }
     
     // Handle waiting for timeout
-    if (session?.waitingForTimeout) {
+    if (session.waitingForTimeout) {
         const groupId = session.waitingForTimeout;
         
         if (ctx.message.text === '/cancel') {
@@ -594,7 +650,7 @@ bot.on('text', async (ctx) => {
         await ctx.reply(`✅ Timeout set to ${timeout} seconds!`);
         
         // Show panel again
-        ctx.chat = { id: parseInt(groupId), type: 'group', title: ctx.chat?.title || 'Group' };
+        ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
         await showGroupAdminPanel(ctx, groupId);
         return;
     }
@@ -611,9 +667,10 @@ bot.on(message('new_chat_members'), async (ctx) => {
     
     // Get group settings
     const settings = await db.getGroupSettings(groupId);
+    if (!settings) return;
     
     // Delete Telegram's join message if enabled
-    if (settings?.delete_join_message) {
+    if (settings.delete_join_message) {
         try {
             await ctx.deleteMessage(ctx.message.message_id);
         } catch (error) {
@@ -632,14 +689,14 @@ bot.on(message('new_chat_members'), async (ctx) => {
         setTimeout(() => processedJoins.delete(joinKey), 60000);
         
         // Generate captcha based on settings
-        const captcha = generateCaptcha(settings?.captcha_type || 'math', settings?.captcha_difficulty || 'medium');
+        const captcha = generateCaptcha(settings.captcha_type, settings.captcha_difficulty);
         
         // Format welcome message
-        let welcomeText = settings?.welcome_text || 'Welcome {user}! Please solve this captcha to join:';
+        let welcomeText = settings.welcome_text;
         welcomeText = welcomeText.replace(/{user}/g, `[${member.first_name}](tg://user?id=${member.id})`);
         
         // Create captcha message
-        const captchaMessage = `${welcomeText}\n\n${captcha.question}\n\n_⏰ Timeout: ${settings?.captcha_time || 120} seconds_`;
+        const captchaMessage = `${welcomeText}\n\n${captcha.question}\n\n_⏰ Timeout: ${settings.captcha_time} seconds_`;
         
         try {
             // Send captcha
@@ -651,8 +708,8 @@ bot.on(message('new_chat_members'), async (ctx) => {
             });
             
             // Calculate expiration
-            const expiresAt = new Date();
-            expiresAt.setSeconds(expiresAt.getSeconds() + (settings?.captcha_time || 120));
+            const expireAt = new Date();
+            expireAt.setSeconds(expireAt.getSeconds() + settings.captcha_time);
             
             // Save to database
             await db.saveCaptcha(
@@ -662,7 +719,7 @@ bot.on(message('new_chat_members'), async (ctx) => {
                 member.username,
                 captcha.answer,
                 sentMessage.message_id,
-                expiresAt
+                expireAt
             );
             
             console.log(`🆕 Captcha sent to ${member.first_name} in ${ctx.chat.title}`);

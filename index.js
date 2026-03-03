@@ -1,5 +1,6 @@
 const { Telegraf, Markup } = require('telegraf');
 const { message } = require('telegraf/filters');
+const express = require('express');
 require('dotenv').config();
 
 const db = require('./db');
@@ -27,9 +28,53 @@ async function startBot() {
     // Start cleaning expired captchas
     setInterval(cleanExpiredCaptchas, 30000);
     
-    // Use long polling
-    await bot.launch();
-    console.log('✅ Bot started with long polling');
+    // Check if we should use webhook or polling
+    if (process.env.WEBHOOK_URL) {
+        // Use webhook for production (Railway)
+        try {
+            // Delete any existing webhook
+            await bot.telegram.deleteWebhook();
+            
+            // Set webhook
+            const webhookUrl = `${process.env.WEBHOOK_URL}/webhook`;
+            await bot.telegram.setWebhook(webhookUrl);
+            console.log(`✅ Webhook set to: ${webhookUrl}`);
+            
+            // Start express server
+            const app = express();
+            app.use(express.json());
+            
+            // Webhook endpoint
+            app.post('/webhook', (req, res) => {
+                bot.handleUpdate(req.body, res);
+            });
+            
+            // Health check
+            app.get('/', (req, res) => {
+                res.send('🤖 Welcome Bot is running!');
+            });
+            
+            const port = process.env.PORT || 3000;
+            app.listen(port, () => {
+                console.log(`✅ Express server running on port ${port}`);
+            });
+            
+        } catch (error) {
+            console.error('Error setting up webhook:', error);
+        }
+    } else {
+        // Use long polling for development
+        try {
+            // Delete any existing webhook first
+            await bot.telegram.deleteWebhook();
+            
+            // Start polling
+            await bot.launch();
+            console.log('✅ Bot started with long polling');
+        } catch (error) {
+            console.error('Error starting bot with polling:', error);
+        }
+    }
 }
 
 // Simple session middleware

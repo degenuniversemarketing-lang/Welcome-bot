@@ -23,20 +23,17 @@ async function isAllowedGroup(groupId) {
 
 /* ---------------- ADMIN COMMANDS ---------------- */
 
-// ADD GROUP
 bot.command("add", async (ctx) => {
   if (!isAdmin(ctx)) return;
 
   const args = ctx.message.text.split(" ");
   const groupId = args[1];
-
-  if (!groupId) return ctx.reply("Usage: /add -100xxxxxxxx");
+  if (!groupId) return ctx.reply("Usage: /add -100GROUPID");
 
   await pool.query(
     "INSERT INTO allowed_groups (group_id, group_title) VALUES ($1,$2) ON CONFLICT DO NOTHING",
     [groupId, "Manual Added"]
   );
-
   await pool.query(
     "INSERT INTO group_settings (group_id) VALUES ($1) ON CONFLICT DO NOTHING",
     [groupId]
@@ -45,14 +42,12 @@ bot.command("add", async (ctx) => {
   ctx.reply("✅ Group added successfully.");
 });
 
-// REMOVE GROUP
 bot.command("remove", async (ctx) => {
   if (!isAdmin(ctx)) return;
 
   const args = ctx.message.text.split(" ");
   const groupId = args[1];
-
-  if (!groupId) return ctx.reply("Usage: /remove -100xxxxxxxx");
+  if (!groupId) return ctx.reply("Usage: /remove -100GROUPID");
 
   await pool.query("DELETE FROM allowed_groups WHERE group_id=$1", [groupId]);
   await pool.query("DELETE FROM group_settings WHERE group_id=$1", [groupId]);
@@ -60,17 +55,13 @@ bot.command("remove", async (ctx) => {
   ctx.reply("❌ Group removed.");
 });
 
-// STATS
 bot.command("stats", async (ctx) => {
   if (!isAdmin(ctx)) return;
 
   const groups = await pool.query("SELECT * FROM allowed_groups");
   const pending = await pool.query("SELECT COUNT(*) FROM pending_captcha");
 
-  let text = `📊 Bot Stats\n\n`;
-  text += `Active Groups: ${groups.rowCount}\n`;
-  text += `Pending Captchas: ${pending.rows[0].count}\n\n`;
-
+  let text = `📊 Bot Stats\n\nActive Groups: ${groups.rowCount}\nPending Captchas: ${pending.rows[0].count}\n\n`;
   groups.rows.forEach((g, i) => {
     text += `${i + 1}. ${g.group_id}\n`;
   });
@@ -82,14 +73,12 @@ bot.command("stats", async (ctx) => {
 
 bot.on("new_chat_members", async (ctx) => {
   const groupId = ctx.chat.id;
-
   if (!(await isAllowedGroup(groupId))) return;
 
   const settingsRes = await pool.query(
     "SELECT * FROM group_settings WHERE group_id=$1",
     [groupId]
   );
-
   const settings = settingsRes.rows[0];
   const captchaTime = settings.captcha_time;
 
@@ -99,7 +88,7 @@ bot.on("new_chat_members", async (ctx) => {
     const correct = String(a + b);
 
     const msg = await ctx.reply(
-      `👋 Welcome ${member.first_name}\n\nSolve this to stay:\n${a} + ${b} = ?`
+      `${settings.welcome_text.replace("{user}", member.first_name)}\n\nSolve to stay:\n${a} + ${b} = ?`
     );
 
     const expireAt = new Date(Date.now() + captchaTime * 1000);
@@ -135,7 +124,7 @@ bot.on("text", async (ctx) => {
       [userId, groupId]
     );
 
-    await ctx.reply("✅ Verified!");
+    await ctx.reply(`✅ Verified, ${ctx.from.first_name}!`);
 
     try {
       await bot.telegram.deleteMessage(groupId, row.message_id);

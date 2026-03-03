@@ -1,6 +1,5 @@
 const { Telegraf, Markup } = require('telegraf');
 const { message } = require('telegraf/filters');
-const express = require('express');
 require('dotenv').config();
 
 const db = require('./db');
@@ -9,7 +8,7 @@ const db = require('./db');
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const SUPER_ADMIN_ID = process.env.BOT_ADMIN_ID;
 
-// Simple in-memory session store (since we removed telegraf-session-pg)
+// Simple in-memory session store
 const sessions = new Map();
 
 // Track processed joins
@@ -28,34 +27,9 @@ async function startBot() {
     // Start cleaning expired captchas
     setInterval(cleanExpiredCaptchas, 30000);
     
-    // Setup webhook or polling
-    if (process.env.WEBHOOK_URL) {
-        const app = express();
-        const webhookUrl = `${process.env.WEBHOOK_URL}/webhook`;
-        
-        app.use(express.json());
-        app.use((req, res, next) => {
-            if (req.path === '/webhook') {
-                bot.handleUpdate(req.body, res);
-            } else {
-                next();
-            }
-        });
-        
-        app.get('/', (req, res) => {
-            res.send('🤖 Welcome Bot is running!');
-        });
-        
-        await bot.telegram.setWebhook(webhookUrl);
-        console.log(`✅ Webhook set to: ${webhookUrl}`);
-        
-        app.listen(process.env.PORT || 3000, () => {
-            console.log(`✅ Express server running on port ${process.env.PORT || 3000}`);
-        });
-    } else {
-        await bot.launch();
-        console.log('✅ Bot started with long polling');
-    }
+    // Use long polling instead of webhook
+    await bot.launch();
+    console.log('✅ Bot started with long polling');
 }
 
 // Simple session middleware

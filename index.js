@@ -302,10 +302,6 @@ bot.command('globalstats', async (ctx) => {
     
     const stats = await db.getStats();
     
-    if (!stats) {
-        return ctx.reply('❌ Error fetching stats.');
-    }
-    
     let message = `🌍 **Global Statistics**\n\n`;
     message += `**Total Groups:** ${stats.totalGroups}\n`;
     message += `**Pending Captchas:** ${stats.pendingCaptchas}\n\n`;

@@ -23,16 +23,30 @@ async function initDatabase() {
 // ============ GROUP MANAGEMENT ============
 async function addGroup(groupId, groupTitle, addedBy) {
     try {
-        await pool.query(
-            'INSERT INTO allowed_groups (group_id, group_title, added_by) VALUES ($1, $2, $3) ON CONFLICT (group_id) DO UPDATE SET is_active = TRUE',
-            [groupId, groupTitle, addedBy]
-        );
-        
-        await pool.query(
-            'INSERT INTO group_settings (group_id) VALUES ($1) ON CONFLICT (group_id) DO NOTHING',
+        // First check if group exists
+        const checkResult = await pool.query(
+            'SELECT * FROM allowed_groups WHERE group_id = $1',
             [groupId]
         );
         
+        if (checkResult.rows.length > 0) {
+            console.log(`Group ${groupId} already exists`);
+            return false;
+        }
+        
+        // Insert new group
+        await pool.query(
+            'INSERT INTO allowed_groups (group_id, group_title, added_by) VALUES ($1, $2, $3)',
+            [groupId, groupTitle, addedBy]
+        );
+        
+        // Insert default settings
+        await pool.query(
+            'INSERT INTO group_settings (group_id) VALUES ($1)',
+            [groupId]
+        );
+        
+        console.log(`✅ Group ${groupId} added successfully`);
         return true;
     } catch (error) {
         console.error('Error adding group:', error);
@@ -162,15 +176,15 @@ async function updateGroupSettings(groupId, settings) {
 }
 
 // ============ CAPTCHA MANAGEMENT ============
-async function saveCaptcha(userId, groupId, firstName, username, correctAnswer, messageId, expiresAt) {
+async function saveCaptcha(userId, groupId, firstName, username, correctAnswer, messageId, expireAt) {
     try {
         await pool.query(
-            `INSERT INTO pending_captcha (user_id, group_id, first_name, username, correct_answer, message_id, expires_at)
+            `INSERT INTO pending_captcha (user_id, group_id, first_name, username, correct_answer, message_id, expire_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7)
              ON CONFLICT (user_id, group_id) 
-             DO UPDATE SET correct_answer = $5, message_id = $6, expires_at = $7, 
+             DO UPDATE SET correct_answer = $5, message_id = $6, expire_at = $7, 
                            first_name = $3, username = $4, attempt_count = 0`,
-            [userId, groupId, firstName, username, correctAnswer, messageId, expiresAt]
+            [userId, groupId, firstName, username, correctAnswer, messageId, expireAt]
         );
         return true;
     } catch (error) {
@@ -226,7 +240,7 @@ async function getCaptchaInfo(userId, groupId) {
 async function getExpiredCaptchas() {
     try {
         const result = await pool.query(
-            'SELECT * FROM pending_captcha WHERE expires_at < NOW()'
+            'SELECT * FROM pending_captcha WHERE expire_at < NOW()'
         );
         return result.rows;
     } catch (error) {

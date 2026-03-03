@@ -1,17 +1,18 @@
 {
   "name": "telegram-welcome-guard-bot",
   "version": "1.0.0",
-  "type": "module",
+  "description": "Advanced Telegram Welcome Bot with Captcha Protection",
   "main": "index.js",
-  "engines": {
-    "node": "20.x"
-  },
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js"
   },
   "dependencies": {
-    "dotenv": "^16.4.0",
-    "pg": "^8.11.3",
-    "telegraf": "^4.16.3"
+    "telegraf": "^4.12.2",
+    "pg": "^8.11.0",
+    "dotenv": "^16.0.3"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22"
   }
 }

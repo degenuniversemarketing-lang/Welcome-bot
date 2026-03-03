@@ -1,4 +1,4 @@
-const { Telegraf, Markup, Scenes, session } = require('telegraf');
+const { Telegraf, Markup } = require('telegraf');
 const { message } = require('telegraf/filters');
 const express = require('express');
 require('dotenv').config();
@@ -8,6 +8,9 @@ const db = require('./db');
 // Initialize bot
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const SUPER_ADMIN_ID = process.env.BOT_ADMIN_ID;
+
+// Simple in-memory session store (since we removed telegraf-session-pg)
+const sessions = new Map();
 
 // Track processed joins
 const processedJoins = new Set();
@@ -53,6 +56,14 @@ async function startBot() {
         await bot.launch();
         console.log('✅ Bot started with long polling');
     }
+}
+
+// Simple session middleware
+function getSession(userId) {
+    if (!sessions.has(userId)) {
+        sessions.set(userId, {});
+    }
+    return sessions.get(userId);
 }
 
 // ============ CAPTCHA GENERATORS ============
@@ -361,9 +372,9 @@ bot.action(/edit_welcome_(.+)/, async (ctx) => {
         { parse_mode: 'Markdown' }
     );
     
-    // Set session state
-    ctx.session = ctx.session || {};
-    ctx.session.waitingForWelcome = groupId;
+    // Set session using in-memory store
+    const session = getSession(ctx.from.id.toString());
+    session.waitingForWelcome = groupId;
 });
 
 bot.action(/edit_type_(.+)/, async (ctx) => {
@@ -398,7 +409,7 @@ bot.action(/set_type_(.+)_(.+)/, async (ctx) => {
     await ctx.answerCbQuery(`✅ Captcha type set to ${captchaType}`);
     
     // Go back to panel
-    ctx.chat = { id: groupId, type: 'group' };
+    ctx.chat = { id: parseInt(groupId), type: 'group', title: ctx.chat?.title || 'Group' };
     await showGroupAdminPanel(ctx, groupId);
 });
 
@@ -433,7 +444,7 @@ bot.action(/set_diff_(.+)_(.+)/, async (ctx) => {
     await db.updateGroupSettings(groupId, { captcha_difficulty: difficulty });
     await ctx.answerCbQuery(`✅ Difficulty set to ${difficulty}`);
     
-    ctx.chat = { id: groupId, type: 'group' };
+    ctx.chat = { id: parseInt(groupId), type: 'group', title: ctx.chat?.title || 'Group' };
     await showGroupAdminPanel(ctx, groupId);
 });
 
@@ -452,8 +463,8 @@ bot.action(/edit_time_(.+)/, async (ctx) => {
         { parse_mode: 'Markdown' }
     );
     
-    ctx.session = ctx.session || {};
-    ctx.session.waitingForTimeout = groupId;
+    const session = getSession(ctx.from.id.toString());
+    session.waitingForTimeout = groupId;
 });
 
 bot.action(/toggle_join_(.+)/, async (ctx) => {
@@ -469,7 +480,7 @@ bot.action(/toggle_join_(.+)/, async (ctx) => {
     await db.updateGroupSettings(groupId, { delete_join_message: newValue });
     await ctx.answerCbQuery(`✅ Delete join message: ${newValue ? 'ON' : 'OFF'}`);
     
-    ctx.chat = { id: groupId, type: 'group' };
+    ctx.chat = { id: parseInt(groupId), type: 'group', title: ctx.chat?.title || 'Group' };
     await showGroupAdminPanel(ctx, groupId);
 });
 
@@ -486,7 +497,7 @@ bot.action(/toggle_kick_(.+)/, async (ctx) => {
     await db.updateGroupSettings(groupId, { kick_on_timeout: newValue });
     await ctx.answerCbQuery(`✅ Kick on timeout: ${newValue ? 'ON' : 'OFF'}`);
     
-    ctx.chat = { id: groupId, type: 'group' };
+    ctx.chat = { id: parseInt(groupId), type: 'group', title: ctx.chat?.title || 'Group' };
     await showGroupAdminPanel(ctx, groupId);
 });
 
@@ -503,10 +514,9 @@ bot.action(/manage_admins_(.+)/, async (ctx) => {
     admins.forEach((admin, index) => {
         message += `${index + 1}. @${admin.admin_username || 'Unknown'} (${admin.admin_id})\n`;
     });
-    message += `\nTo remove an admin, use /removeadmin @username`;
+    message += `\nTo add an admin, they just need to use /start in this group.`;
     
     const keyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('➕ Add Admin', `add_admin_${groupId}`)],
         [Markup.button.callback('◀️ Back', `back_to_panel_${groupId}`)]
     ]);
     
@@ -524,7 +534,7 @@ bot.action(/group_stats_(.+)/, async (ctx) => {
     
     const message = `
 📊 **Group Statistics**
-Group: ${ctx.chat.title}
+Group: ${ctx.chat?.title || 'This Group'}
 
 **Overview:**
 👥 Total Admins: ${(await db.getGroupAdmins(groupId)).length}
@@ -552,48 +562,50 @@ bot.action(/back_to_panel_(.+)/, async (ctx) => {
         return ctx.answerCbQuery('❌ You are not an admin of this group');
     }
     
-    ctx.chat = { id: groupId, type: 'group', title: ctx.chat.title };
+    ctx.chat = { id: parseInt(groupId), type: 'group', title: ctx.chat?.title || 'Group' };
     await showGroupAdminPanel(ctx, groupId);
 });
 
 // ============ TEXT HANDLERS ============
 bot.on('text', async (ctx) => {
+    const session = getSession(ctx.from.id.toString());
+    
     // Handle waiting for welcome text
-    if (ctx.session?.waitingForWelcome) {
-        const groupId = ctx.session.waitingForWelcome;
+    if (session?.waitingForWelcome) {
+        const groupId = session.waitingForWelcome;
         
         if (ctx.message.text === '/cancel') {
-            ctx.session.waitingForWelcome = null;
+            delete session.waitingForWelcome;
             return ctx.reply('❌ Cancelled.');
         }
         
         if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
-            ctx.session.waitingForWelcome = null;
+            delete session.waitingForWelcome;
             return ctx.reply('❌ You are not an admin of this group');
         }
         
         await db.updateGroupSettings(groupId, { welcome_text: ctx.message.text });
-        ctx.session.waitingForWelcome = null;
+        delete session.waitingForWelcome;
         
         await ctx.reply('✅ Welcome text updated!');
         
         // Show panel again
-        ctx.chat = { id: groupId, type: 'group', title: ctx.chat.title };
+        ctx.chat = { id: parseInt(groupId), type: 'group', title: ctx.chat?.title || 'Group' };
         await showGroupAdminPanel(ctx, groupId);
         return;
     }
     
     // Handle waiting for timeout
-    if (ctx.session?.waitingForTimeout) {
-        const groupId = ctx.session.waitingForTimeout;
+    if (session?.waitingForTimeout) {
+        const groupId = session.waitingForTimeout;
         
         if (ctx.message.text === '/cancel') {
-            ctx.session.waitingForTimeout = null;
+            delete session.waitingForTimeout;
             return ctx.reply('❌ Cancelled.');
         }
         
         if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
-            ctx.session.waitingForTimeout = null;
+            delete session.waitingForTimeout;
             return ctx.reply('❌ You are not an admin of this group');
         }
         
@@ -603,12 +615,12 @@ bot.on('text', async (ctx) => {
         }
         
         await db.updateGroupSettings(groupId, { captcha_time: timeout });
-        ctx.session.waitingForTimeout = null;
+        delete session.waitingForTimeout;
         
         await ctx.reply(`✅ Timeout set to ${timeout} seconds!`);
         
         // Show panel again
-        ctx.chat = { id: groupId, type: 'group', title: ctx.chat.title };
+        ctx.chat = { id: parseInt(groupId), type: 'group', title: ctx.chat?.title || 'Group' };
         await showGroupAdminPanel(ctx, groupId);
         return;
     }
@@ -660,8 +672,7 @@ bot.on(message('new_chat_members'), async (ctx) => {
             const sentMessage = await ctx.reply(captchaMessage, {
                 parse_mode: 'Markdown',
                 reply_markup: {
-                    force_reply: true,
-                    selective: true
+                    force_reply: true
                 }
             });
             

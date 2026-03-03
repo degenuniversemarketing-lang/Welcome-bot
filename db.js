@@ -12,6 +12,16 @@ async function initDatabase() {
     try {
         const client = await pool.connect();
         console.log('✅ Connected to PostgreSQL database');
+        
+        // Test query to check if tables exist
+        try {
+            const testQuery = await pool.query('SELECT COUNT(*) FROM allowed_groups');
+            console.log('✅ Database tables are ready');
+        } catch (testError) {
+            console.log('⚠️  Tables might not exist. Please run schema.sql manually.');
+            console.log('Error:', testError.message);
+        }
+        
         client.release();
         return true;
     } catch (error) {
@@ -23,9 +33,11 @@ async function initDatabase() {
 // ============ GROUP MANAGEMENT ============
 async function addGroup(groupId, groupTitle, addedBy) {
     try {
+        console.log(`Attempting to add group: ${groupId}`);
+        
         // First check if group exists
         const checkResult = await pool.query(
-            'SELECT * FROM allowed_groups WHERE group_id = $1',
+            'SELECT group_id FROM allowed_groups WHERE group_id = $1',
             [groupId]
         );
         
@@ -39,14 +51,15 @@ async function addGroup(groupId, groupTitle, addedBy) {
             'INSERT INTO allowed_groups (group_id, group_title, added_by) VALUES ($1, $2, $3)',
             [groupId, groupTitle, addedBy]
         );
+        console.log(`Group inserted: ${groupId}`);
         
         // Insert default settings
         await pool.query(
             'INSERT INTO group_settings (group_id) VALUES ($1)',
             [groupId]
         );
+        console.log(`Default settings inserted for: ${groupId}`);
         
-        console.log(`✅ Group ${groupId} added successfully`);
         return true;
     } catch (error) {
         console.error('Error adding group:', error);
@@ -67,13 +80,25 @@ async function removeGroup(groupId) {
 async function isGroupAllowed(groupId) {
     try {
         const result = await pool.query(
-            'SELECT 1 FROM allowed_groups WHERE group_id = $1 AND is_active = TRUE',
+            'SELECT is_active FROM allowed_groups WHERE group_id = $1',
             [groupId]
         );
-        return result.rows.length > 0;
+        return result.rows.length > 0 && result.rows[0].is_active === true;
     } catch (error) {
         console.error('Error checking group:', error);
         return false;
+    }
+}
+
+async function getAllowedGroups() {
+    try {
+        const result = await pool.query(
+            'SELECT group_id, group_title, is_active FROM allowed_groups ORDER BY added_at DESC'
+        );
+        return result.rows;
+    } catch (error) {
+        console.error('Error getting allowed groups:', error);
+        return [];
     }
 }
 
@@ -114,19 +139,6 @@ async function getGroupAdmins(groupId) {
     } catch (error) {
         console.error('Error getting group admins:', error);
         return [];
-    }
-}
-
-async function removeGroupAdmin(groupId, adminId) {
-    try {
-        await pool.query(
-            'DELETE FROM group_admins WHERE group_id = $1 AND admin_id = $2',
-            [groupId, adminId]
-        );
-        return true;
-    } catch (error) {
-        console.error('Error removing group admin:', error);
-        return false;
     }
 }
 
@@ -270,12 +282,12 @@ async function getStats(adminId = null) {
         if (adminId) {
             // Stats for specific admin
             groupsResult = await pool.query(
-                'SELECT COUNT(DISTINCT g.group_id) FROM allowed_groups g JOIN group_admins a ON g.group_id = a.group_id WHERE a.admin_id = $1',
+                'SELECT COUNT(DISTINCT g.group_id) as count FROM allowed_groups g JOIN group_admins a ON g.group_id = a.group_id WHERE a.admin_id = $1',
                 [adminId]
             );
             
             captchasResult = await pool.query(
-                'SELECT COUNT(*) FROM pending_captcha WHERE group_id IN (SELECT group_id FROM group_admins WHERE admin_id = $1)',
+                'SELECT COUNT(*) as count FROM pending_captcha WHERE group_id IN (SELECT group_id FROM group_admins WHERE admin_id = $1)',
                 [adminId]
             );
             
@@ -289,8 +301,8 @@ async function getStats(adminId = null) {
             );
         } else {
             // Global stats (super admin)
-            groupsResult = await pool.query('SELECT COUNT(*) FROM allowed_groups');
-            captchasResult = await pool.query('SELECT COUNT(*) FROM pending_captcha');
+            groupsResult = await pool.query('SELECT COUNT(*) as count FROM allowed_groups');
+            captchasResult = await pool.query('SELECT COUNT(*) as count FROM pending_captcha');
             groupsList = await pool.query(
                 'SELECT group_id, group_title, is_active FROM allowed_groups ORDER BY added_at DESC'
             );
@@ -303,7 +315,7 @@ async function getStats(adminId = null) {
         };
     } catch (error) {
         console.error('Error getting stats:', error);
-        return null;
+        return { totalGroups: 0, pendingCaptchas: 0, groups: [] };
     }
 }
 
@@ -313,10 +325,10 @@ module.exports = {
     addGroup,
     removeGroup,
     isGroupAllowed,
+    getAllowedGroups,
     addGroupAdmin,
     isGroupAdmin,
     getGroupAdmins,
-    removeGroupAdmin,
     getGroupSettings,
     updateGroupSettings,
     saveCaptcha,

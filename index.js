@@ -84,25 +84,29 @@ function generateButtonCaptcha() {
 }
 
 // ============ PUNISHMENT HANDLER ============
-async function applyPunishment(ctx, groupId, userId, action, reason = 'Failed captcha') {
+async function applyPunishment(telegram, groupId, userId, action, reason = 'Failed captcha', chatId = null) {
     try {
         switch(action) {
             case 'ban':
-                await ctx.telegram.banChatMember(groupId, parseInt(userId));
-                await ctx.reply(`🚫 User banned for: ${reason}`);
+                await telegram.banChatMember(groupId, parseInt(userId));
+                if (chatId) {
+                    await telegram.sendMessage(chatId, `🚫 User banned for: ${reason}`);
+                }
                 console.log(`🚫 User ${userId} banned for: ${reason}`);
                 break;
                 
             case 'kick':
-                await ctx.telegram.kickChatMember(groupId, parseInt(userId));
-                await ctx.telegram.unbanChatMember(groupId, parseInt(userId)); // Unban to allow rejoin
-                await ctx.reply(`👢 User kicked for: ${reason}`);
+                await telegram.kickChatMember(groupId, parseInt(userId));
+                await telegram.unbanChatMember(groupId, parseInt(userId)); // Unban to allow rejoin
+                if (chatId) {
+                    await telegram.sendMessage(chatId, `👢 User kicked for: ${reason}`);
+                }
                 console.log(`👢 User ${userId} kicked for: ${reason}`);
                 break;
                 
             case 'mute':
                 const untilDate = Math.floor(Date.now() / 1000) + 3600; // 1 hour mute
-                await ctx.telegram.restrictChatMember(groupId, parseInt(userId), {
+                await telegram.restrictChatMember(groupId, parseInt(userId), {
                     permissions: {
                         can_send_messages: false,
                         can_send_media_messages: false,
@@ -115,13 +119,17 @@ async function applyPunishment(ctx, groupId, userId, action, reason = 'Failed ca
                     },
                     until_date: untilDate
                 });
-                await ctx.reply(`🔇 User muted for 1 hour for: ${reason}`);
+                if (chatId) {
+                    await telegram.sendMessage(chatId, `🔇 User muted for 1 hour for: ${reason}`);
+                }
                 console.log(`🔇 User ${userId} muted for: ${reason}`);
                 break;
                 
             case 'remove':
                 // Just remove from pending, no actual punishment
-                await ctx.reply(`⚠️ User removed from verification for: ${reason}`);
+                if (chatId) {
+                    await telegram.sendMessage(chatId, `⚠️ User removed from verification for: ${reason}`);
+                }
                 console.log(`⚠️ User ${userId} removed from verification for: ${reason}`);
                 break;
         }
@@ -141,11 +149,12 @@ async function cleanExpiredCaptchas() {
                 
                 if (settings && settings.punishment_action && settings.captcha_enabled) {
                     await applyPunishment(
-                        { telegram: bot.telegram },
+                        bot.telegram,
                         captcha.group_id,
                         captcha.user_id,
                         settings.punishment_action,
-                        'Captcha timeout'
+                        'Captcha timeout',
+                        captcha.group_id // Send message to the group
                     );
                 }
                 
@@ -215,7 +224,7 @@ Group: ${ctx.chat.title}
 🔘 Buttons: ${settings.welcome_buttons ? '✅' : '❌'}
 🎯 Captcha: ${settings.captcha_enabled ? '✅ Enabled' : '❌ Disabled'}
 ⏰ Timeout: ${settings.captcha_time}s
-✅ Verify Delete: ${settings.verify_delete_time}s
+✅ Verify Delete: ${settings.verify_delete_time || 5}s
 ⚖️ Punishment: ${punishmentEmoji[settings.punishment_action]} ${settings.punishment_action}
 🔄 Max Attempts: ${settings.max_attempts}
 🗑️ Delete Join: ${settings.delete_join_message ? '✅' : '❌'}
@@ -758,7 +767,7 @@ bot.action(/verify_(\d+)/, async (ctx) => {
             setTimeout(async () => {
                 try {
                     await ctx.deleteMessage(welcomeMsg.message_id);
-                    console.log(`🗑️ Auto-deleted welcome message for ${ctx.from.firstName}`);
+                    console.log(`🗑️ Auto-deleted welcome message for ${ctx.from.first_name}`);
                 } catch (e) {
                     console.log('Could not auto-delete message:', e.message);
                 }

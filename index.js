@@ -90,14 +90,18 @@ async function applyPunishment(ctx, groupId, userId, action, reason = 'Failed ca
             case 'ban':
                 await ctx.telegram.banChatMember(groupId, parseInt(userId));
                 await ctx.reply(`🚫 User banned for: ${reason}`);
+                console.log(`🚫 User ${userId} banned for: ${reason}`);
                 break;
+                
             case 'kick':
                 await ctx.telegram.kickChatMember(groupId, parseInt(userId));
-                await ctx.telegram.unbanChatMember(groupId, parseInt(userId));
+                await ctx.telegram.unbanChatMember(groupId, parseInt(userId)); // Unban to allow rejoin
                 await ctx.reply(`👢 User kicked for: ${reason}`);
+                console.log(`👢 User ${userId} kicked for: ${reason}`);
                 break;
+                
             case 'mute':
-                const untilDate = Math.floor(Date.now() / 1000) + 3600;
+                const untilDate = Math.floor(Date.now() / 1000) + 3600; // 1 hour mute
                 await ctx.telegram.restrictChatMember(groupId, parseInt(userId), {
                     permissions: {
                         can_send_messages: false,
@@ -112,9 +116,13 @@ async function applyPunishment(ctx, groupId, userId, action, reason = 'Failed ca
                     until_date: untilDate
                 });
                 await ctx.reply(`🔇 User muted for 1 hour for: ${reason}`);
+                console.log(`🔇 User ${userId} muted for: ${reason}`);
                 break;
+                
             case 'remove':
+                // Just remove from pending, no actual punishment
                 await ctx.reply(`⚠️ User removed from verification for: ${reason}`);
+                console.log(`⚠️ User ${userId} removed from verification for: ${reason}`);
                 break;
         }
     } catch (error) {
@@ -131,7 +139,7 @@ async function cleanExpiredCaptchas() {
             try {
                 const settings = await db.getGroupSettings(captcha.group_id);
                 
-                if (settings && settings.punishment_action) {
+                if (settings && settings.punishment_action && settings.captcha_enabled) {
                     await applyPunishment(
                         { telegram: bot.telegram },
                         captcha.group_id,
@@ -205,9 +213,9 @@ Group: ${ctx.chat.title}
 📝 Welcome: ${settings.welcome_text.substring(0, 30)}...
 🖼️ Image: ${settings.welcome_image ? '✅' : '❌'}
 🔘 Buttons: ${settings.welcome_buttons ? '✅' : '❌'}
-🎯 Captcha: Button-based (Always works)
-⚡ Difficulty: N/A
+🎯 Captcha: ${settings.captcha_enabled ? '✅ Enabled' : '❌ Disabled'}
 ⏰ Timeout: ${settings.captcha_time}s
+✅ Verify Delete: ${settings.verify_delete_time}s
 ⚖️ Punishment: ${punishmentEmoji[settings.punishment_action]} ${settings.punishment_action}
 🔄 Max Attempts: ${settings.max_attempts}
 🗑️ Delete Join: ${settings.delete_join_message ? '✅' : '❌'}
@@ -222,7 +230,11 @@ Select an option to configure:
         ],
         [
             Markup.button.callback('🔘 Welcome Buttons', `edit_buttons_${groupId}`),
-            Markup.button.callback('⏰ Timeout', `edit_time_${groupId}`)
+            Markup.button.callback('🎯 Toggle Captcha', `toggle_captcha_${groupId}`)
+        ],
+        [
+            Markup.button.callback('⏰ Timeout', `edit_time_${groupId}`),
+            Markup.button.callback('✅ Verify Delete', `edit_verify_delete_${groupId}`)
         ],
         [
             Markup.button.callback('⚖️ Punishment', `edit_punishment_${groupId}`),
@@ -412,6 +424,49 @@ bot.action(/edit_buttons_(.+)/, async (ctx) => {
         parse_mode: 'Markdown',
         ...keyboard
     });
+});
+
+// Toggle Captcha
+bot.action(/toggle_captcha_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    const settings = await db.getGroupSettings(groupId);
+    const newValue = !settings.captcha_enabled;
+    
+    await db.updateGroupSettings(groupId, { captcha_enabled: newValue });
+    await ctx.answerCbQuery(`✅ Captcha ${newValue ? 'enabled' : 'disabled'}`);
+    
+    try {
+        await ctx.deleteMessage();
+    } catch (e) {}
+    
+    ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.callbackQuery.message.chat.title };
+    await showGroupAdminPanel(ctx, groupId);
+});
+
+// Edit Verify Delete Time
+bot.action(/edit_verify_delete_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    await ctx.editMessageText(
+        `✅ **Set Verification Message Delete Time**\n\n` +
+        `Send the time in seconds after which the welcome message will be deleted (5-60).\n` +
+        `_Current: ${(await db.getGroupSettings(groupId)).verify_delete_time || 5} seconds_\n\n` +
+        `Send /cancel to cancel.`,
+        { parse_mode: 'Markdown' }
+    );
+    
+    const session = getSession(ctx.from.id.toString());
+    session.waitingForVerifyDelete = groupId;
+    await ctx.answerCbQuery();
 });
 
 // Add Button 1
@@ -679,6 +734,10 @@ bot.action(/verify_(\d+)/, async (ctx) => {
             return;
         }
         
+        // Get settings for verify delete time
+        const settings = await db.getGroupSettings(groupId);
+        const deleteTime = settings.verify_delete_time || 5; // Default 5 seconds
+        
         // Check if the code matches
         if (captchaInfo.correct_answer === verificationCode) {
             // ✅ Correct verification
@@ -687,13 +746,24 @@ bot.action(/verify_(\d+)/, async (ctx) => {
             // Delete the captcha message
             await ctx.deleteMessage(captchaInfo.message_id).catch(e => {});
             
-            // Send welcome message
-            await ctx.reply(`✅ **Verified!** Welcome to the group, ${ctx.from.first_name}! 🎉`);
+            // Send welcome message that will auto-delete
+            const welcomeMsg = await ctx.reply(`✅ **Verified!** Welcome to the group, ${ctx.from.first_name}! 🎉`);
             
             // Remove from database
             await db.deleteCaptcha(userId, groupId);
             
             console.log(`✅ ${ctx.from.first_name} verified via button!`);
+            
+            // Auto-delete the welcome message after set time
+            setTimeout(async () => {
+                try {
+                    await ctx.deleteMessage(welcomeMsg.message_id);
+                    console.log(`🗑️ Auto-deleted welcome message for ${ctx.from.firstName}`);
+                } catch (e) {
+                    console.log('Could not auto-delete message:', e.message);
+                }
+            }, deleteTime * 1000);
+            
         } else {
             await ctx.answerCbQuery('❌ Invalid verification!');
         }
@@ -852,6 +922,35 @@ bot.on('text', async (ctx) => {
         return;
     }
     
+    // Handle waiting for verify delete time
+    if (session.waitingForVerifyDelete) {
+        const groupId = session.waitingForVerifyDelete;
+        
+        if (ctx.message.text === '/cancel') {
+            delete session.waitingForVerifyDelete;
+            return ctx.reply('❌ Cancelled.');
+        }
+        
+        if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+            delete session.waitingForVerifyDelete;
+            return ctx.reply('❌ You are not an admin of this group');
+        }
+        
+        const deleteTime = parseInt(ctx.message.text);
+        if (isNaN(deleteTime) || deleteTime < 5 || deleteTime > 60) {
+            return ctx.reply('❌ Please send a number between 5 and 60.');
+        }
+        
+        await db.updateGroupSettings(groupId, { verify_delete_time: deleteTime });
+        delete session.waitingForVerifyDelete;
+        
+        await ctx.reply(`✅ Verification message will now delete after ${deleteTime} seconds!`);
+        
+        ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
+        await showGroupAdminPanel(ctx, groupId);
+        return;
+    }
+    
     // Handle waiting for max attempts
     if (session.waitingForAttempts) {
         const groupId = session.waitingForAttempts;
@@ -899,6 +998,12 @@ bot.on(message('new_chat_members'), async (ctx) => {
         } catch (error) {
             console.log('Could not delete join message:', error.message);
         }
+    }
+    
+    // Check if captcha is enabled
+    if (!settings.captcha_enabled) {
+        console.log(`Captcha disabled for group ${groupId}, skipping verification`);
+        return;
     }
     
     for (const member of newMembers) {

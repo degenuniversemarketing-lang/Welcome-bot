@@ -12,7 +12,7 @@ const SUPER_ADMIN_ID = process.env.BOT_ADMIN_ID;
 // Simple in-memory session store
 const sessions = new Map();
 
-// Track processed joins (prevent duplicates)
+// Track processed joins
 const processedJoins = new Set();
 
 // Initialize database and start bot
@@ -218,7 +218,7 @@ async function showGroupAdminPanel(ctx, groupId) {
 Group: ${ctx.chat.title}
 
 **Current Settings:**
-📝 Welcome Text: ${settings.welcome_text.substring(0, 30)}...
+📝 Welcome Text: ${settings.welcome_text ? settings.welcome_text.substring(0, 30) + '...' : 'Default'}
 🖼️ Captcha Image: ${settings.captcha_image ? '✅' : '❌'}
 🖼️ Welcome Image: ${settings.welcome_image ? '✅' : '❌'}
 🔘 Buttons: ${settings.welcome_buttons ? '✅' : '❌'}
@@ -384,7 +384,7 @@ bot.action(/edit_welcome_([0-9-]+)/, async (ctx) => {
         `Send the new welcome message that appears AFTER verification.\n` +
         `Use {user} for member name and {group} for group name.\n\n` +
         `Example: "Welcome {user} to {group}! We're glad to have you!"\n\n` +
-        `_Current: ${(await db.getGroupSettings(groupId)).welcome_text}_\n\n` +
+        `_Current: ${(await db.getGroupSettings(groupId)).welcome_text || 'Default'}_\n\n` +
         `Send /cancel to cancel.`,
         { parse_mode: 'Markdown' }
     );
@@ -710,6 +710,7 @@ bot.action(/group_stats_([0-9-]+)/, async (ctx) => {
     const pendingCount = await db.getPendingCountForGroup ? 
         await db.getPendingCountForGroup(groupId) : 0;
     const admins = await db.getGroupAdmins(groupId);
+    const settings = await db.getGroupSettings(groupId);
     
     const statsKeyboard = Markup.inlineKeyboard([
         [Markup.button.callback('◀️ Back to Main Panel', `back_to_panel_${groupId}`)]
@@ -722,7 +723,9 @@ Group: ${ctx.callbackQuery.message.chat.title}
 **Overview:**
 👥 Total Admins: ${admins.length}
 ⏳ Pending Captchas: ${pendingCount}
-✅ Captcha Enabled: ${(await db.getGroupSettings(groupId)).captcha_enabled ? 'Yes' : 'No'}
+✅ Captcha Enabled: ${settings.captcha_enabled ? 'Yes' : 'No'}
+🖼️ Captcha Image: ${settings.captcha_image ? '✅ Set' : '❌ Not Set'}
+🖼️ Welcome Image: ${settings.welcome_image ? '✅ Set' : '❌ Not Set'}
     `;
     
     await ctx.editMessageText(statsMessage, { parse_mode: 'Markdown', ...statsKeyboard });
@@ -881,12 +884,13 @@ bot.on('text', async (ctx) => {
             await db.updateGroupSettings(groupId, { captcha_image: url });
             delete session.waitingForCaptchaImage;
             await ctx.reply('✅ Captcha image URL saved!');
+            
+            // Show updated panel immediately
+            ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
+            await showGroupAdminPanel(ctx, groupId);
         } else {
             return ctx.reply('❌ Please send a valid URL starting with http:// or https://');
         }
-        
-        ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
-        await showGroupAdminPanel(ctx, groupId);
         return;
     }
     
@@ -909,12 +913,13 @@ bot.on('text', async (ctx) => {
             await db.updateGroupSettings(groupId, { welcome_image: url });
             delete session.waitingForWelcomeImage;
             await ctx.reply('✅ Welcome image URL saved!');
+            
+            // Show updated panel immediately
+            ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
+            await showGroupAdminPanel(ctx, groupId);
         } else {
             return ctx.reply('❌ Please send a valid URL starting with http:// or https://');
         }
-        
-        ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
-        await showGroupAdminPanel(ctx, groupId);
         return;
     }
     
@@ -941,12 +946,12 @@ bot.on('text', async (ctx) => {
             });
             delete session.waitingForButton1;
             await ctx.reply('✅ Button 1 added!');
+            
+            ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
+            await showGroupAdminPanel(ctx, groupId);
         } else {
             return ctx.reply('❌ Invalid format. Use: Button Text | https://example.com');
         }
-        
-        ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
-        await showGroupAdminPanel(ctx, groupId);
         return;
     }
     
@@ -973,12 +978,12 @@ bot.on('text', async (ctx) => {
             });
             delete session.waitingForButton2;
             await ctx.reply('✅ Button 2 added!');
+            
+            ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
+            await showGroupAdminPanel(ctx, groupId);
         } else {
             return ctx.reply('❌ Invalid format. Use: Button Text | https://example.com');
         }
-        
-        ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
-        await showGroupAdminPanel(ctx, groupId);
         return;
     }
     
@@ -1042,7 +1047,6 @@ bot.on('text', async (ctx) => {
 });
 
 // ============ UNIVERSAL JOIN HANDLER - WORKS FOR ALL GROUP SIZES ============
-// This handles joins via chat_member updates (works for ALL groups, including 10k+)
 bot.on('chat_member', async (ctx) => {
     try {
         const oldStatus = ctx.chatMember.old_chat_member?.status;
@@ -1053,7 +1057,7 @@ bot.on('chat_member', async (ctx) => {
         
         // Check if this is a new join (user became member/administrator from a non-member state)
         const isNewJoin = (oldStatus === 'left' || oldStatus === 'kicked' || !oldStatus) && 
-                          (newStatus === 'member' || newStatus === 'administrator' || newStatus === 'creator');
+                          (newStatus === 'member' || newStatus === 'administrator');
         
         if (!isNewJoin) return;
         
@@ -1121,6 +1125,7 @@ bot.on(message('new_chat_members'), async (ctx) => {
     
     for (const member of newMembers) {
         if (member.id === ctx.botInfo.id) continue;
+        if (member.is_bot) continue;
         
         const joinKey = `${groupId}:${member.id}:${ctx.message.message_id}`;
         if (processedJoins.has(joinKey)) continue;
@@ -1159,11 +1164,13 @@ async function sendCaptcha(ctx, user, groupId, settings) {
                 parse_mode: 'Markdown',
                 reply_markup: keyboard.reply_markup
             });
+            console.log(`🆕 Captcha with image sent to ${user.first_name}`);
         } else {
             sentMessage = await ctx.reply(captchaText, {
                 parse_mode: 'Markdown',
                 reply_markup: keyboard.reply_markup
             });
+            console.log(`🆕 Captcha without image sent to ${user.first_name}`);
         }
         
         const expireAt = new Date();
@@ -1204,7 +1211,7 @@ bot.on('chat_member', async (ctx) => {
         // Check if user left or was kicked
         const isLeft = (newStatus === 'left' || newStatus === 'kicked');
         
-        if (isLeft) {
+        if (isLeft && !user.is_bot) {
             console.log(`👋 User left: ${user.first_name} (${userId}) from ${ctx.chat.title}`);
             await db.deleteCaptcha(userId, groupId).catch(() => {});
         }

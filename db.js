@@ -72,6 +72,18 @@ async function isGroupAllowed(groupId) {
     }
 }
 
+async function getAllowedGroups() {
+    try {
+        const result = await pool.query(
+            'SELECT group_id, group_title, is_active FROM allowed_groups ORDER BY added_at DESC'
+        );
+        return result.rows;
+    } catch (error) {
+        console.error('Error getting allowed groups:', error);
+        return [];
+    }
+}
+
 // ============ ADMIN MANAGEMENT ============
 async function addGroupAdmin(groupId, adminId, adminUsername) {
     try {
@@ -109,6 +121,19 @@ async function getGroupAdmins(groupId) {
     } catch (error) {
         console.error('Error getting group admins:', error);
         return [];
+    }
+}
+
+async function removeGroupAdmin(groupId, adminId) {
+    try {
+        await pool.query(
+            'DELETE FROM group_admins WHERE group_id = $1 AND admin_id = $2',
+            [groupId, adminId]
+        );
+        return true;
+    } catch (error) {
+        console.error('Error removing group admin:', error);
+        return false;
     }
 }
 
@@ -247,14 +272,51 @@ async function deleteCaptcha(userId, groupId) {
     }
 }
 
-// ============ STATISTICS ============
-async function getStats() {
+// ============ PENDING COUNT FOR GROUP ============
+async function getPendingCountForGroup(groupId) {
     try {
-        const groupsResult = await pool.query('SELECT COUNT(*) as count FROM allowed_groups');
-        const captchasResult = await pool.query('SELECT COUNT(*) as count FROM pending_captcha');
-        const groupsList = await pool.query(
-            'SELECT group_id, group_title, is_active FROM allowed_groups ORDER BY added_at DESC'
+        const result = await pool.query(
+            'SELECT COUNT(*) as count FROM pending_captcha WHERE group_id = $1',
+            [groupId]
         );
+        return parseInt(result.rows[0].count);
+    } catch (error) {
+        console.error('Error getting pending count:', error);
+        return 0;
+    }
+}
+
+// ============ STATISTICS ============
+async function getStats(adminId = null) {
+    try {
+        let groupsResult, captchasResult, groupsList;
+        
+        if (adminId) {
+            groupsResult = await pool.query(
+                'SELECT COUNT(DISTINCT g.group_id) as count FROM allowed_groups g JOIN group_admins a ON g.group_id = a.group_id WHERE a.admin_id = $1',
+                [adminId]
+            );
+            
+            captchasResult = await pool.query(
+                'SELECT COUNT(*) as count FROM pending_captcha WHERE group_id IN (SELECT group_id FROM group_admins WHERE admin_id = $1)',
+                [adminId]
+            );
+            
+            groupsList = await pool.query(
+                `SELECT g.group_id, g.group_title, g.is_active 
+                 FROM allowed_groups g 
+                 JOIN group_admins a ON g.group_id = a.group_id 
+                 WHERE a.admin_id = $1 
+                 ORDER BY g.added_at DESC`,
+                [adminId]
+            );
+        } else {
+            groupsResult = await pool.query('SELECT COUNT(*) as count FROM allowed_groups');
+            captchasResult = await pool.query('SELECT COUNT(*) as count FROM pending_captcha');
+            groupsList = await pool.query(
+                'SELECT group_id, group_title, is_active FROM allowed_groups ORDER BY added_at DESC'
+            );
+        }
         
         return {
             totalGroups: parseInt(groupsResult.rows[0].count),
@@ -267,15 +329,60 @@ async function getStats() {
     }
 }
 
+// ============ UPDATE SCHEMA FUNCTION ============
+async function updateSchema() {
+    try {
+        // Check if new columns exist in group_settings
+        const checkColumns = await pool.query(`
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'group_settings' AND column_name = 'welcome_image'
+        `);
+        
+        if (checkColumns.rows.length === 0) {
+            console.log('🔄 Updating database schema...');
+            
+            // Add new columns to group_settings
+            await pool.query(`
+                ALTER TABLE group_settings 
+                ADD COLUMN IF NOT EXISTS welcome_image TEXT,
+                ADD COLUMN IF NOT EXISTS welcome_buttons BOOLEAN DEFAULT FALSE,
+                ADD COLUMN IF NOT EXISTS punishment_action TEXT DEFAULT 'kick',
+                ADD COLUMN IF NOT EXISTS max_attempts INTEGER DEFAULT 3,
+                ADD COLUMN IF NOT EXISTS mute_duration INTEGER DEFAULT 3600,
+                ADD COLUMN IF NOT EXISTS button1_text TEXT,
+                ADD COLUMN IF NOT EXISTS button1_url TEXT,
+                ADD COLUMN IF NOT EXISTS button2_text TEXT,
+                ADD COLUMN IF NOT EXISTS button2_url TEXT
+            `);
+            
+            console.log('✅ Database schema updated successfully');
+        }
+    } catch (error) {
+        console.error('Error updating schema:', error);
+    }
+}
+
+// Initialize database and update schema
+async function initialize() {
+    const connected = await initDatabase();
+    if (connected) {
+        await updateSchema();
+    }
+    return connected;
+}
+
 module.exports = {
     pool,
-    initDatabase,
+    initDatabase: initialize,
     addGroup,
     removeGroup,
     isGroupAllowed,
+    getAllowedGroups,
     addGroupAdmin,
     isGroupAdmin,
     getGroupAdmins,
+    removeGroupAdmin,
     getGroupSettings,
     updateGroupSettings,
     saveCaptcha,
@@ -283,5 +390,6 @@ module.exports = {
     getCaptchaInfo,
     getExpiredCaptchas,
     deleteCaptcha,
+    getPendingCountForGroup,
     getStats
 };

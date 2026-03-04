@@ -4,6 +4,7 @@ const express = require('express');
 require('dotenv').config();
 
 const db = require('./db');
+const { pool } = db;
 
 // Initialize bot
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -1054,51 +1055,97 @@ bot.on(message('new_chat_members'), async (ctx) => {
     }
 });
 
-// ============ CAPTCHA ANSWER HANDLER ============
+// ============ CAPTCHA ANSWER HANDLER (FIXED) ============
 bot.on('text', async (ctx) => {
+    // Only process in groups
     if (ctx.chat.type === 'private') return;
     
     const groupId = ctx.chat.id.toString();
     const userId = ctx.from.id.toString();
     const answer = ctx.message.text.trim();
     
+    // Check if this is a reply to a message
     if (!ctx.message.reply_to_message) return;
     
+    // Get captcha info for this user
     const captchaInfo = await db.getCaptchaInfo(userId, groupId);
     
-    if (!captchaInfo) return;
+    // If no captcha found for this user, ignore
+    if (!captchaInfo) {
+        console.log(`No captcha found for user ${userId} in group ${groupId}`);
+        return;
+    }
     
-    if (ctx.message.reply_to_message.message_id !== captchaInfo.message_id) return;
+    // Check if the reply is to the correct captcha message
+    if (ctx.message.reply_to_message.message_id !== captchaInfo.message_id) {
+        console.log(`Wrong message ID: user replied to wrong message`);
+        return;
+    }
     
+    console.log(`Captcha answer received from ${ctx.from.first_name}: ${answer}`);
+    console.log(`Expected answer: ${captchaInfo.correct_answer}`);
+    
+    // Get group settings
     const settings = await db.getGroupSettings(groupId);
-    const result = await db.verifyCaptcha(userId, groupId, answer);
     
-    if (result.success) {
+    // Verify the captcha (compare as strings to handle both number and text)
+    const isCorrect = answer.toString().trim() === captchaInfo.correct_answer.toString().trim();
+    
+    if (isCorrect) {
+        // CORRECT ANSWER - No punishment, just verify
         try {
-            await ctx.deleteMessage(captchaInfo.message_id);
+            // Delete the captcha message
+            await ctx.deleteMessage(captchaInfo.message_id).catch(e => console.log('Could not delete message:', e.message));
+            
+            // Send welcome message
             await ctx.reply(`✅ **Verified!** Welcome to the group, ${ctx.from.first_name}!`, {
                 parse_mode: 'Markdown',
                 reply_to_message_id: ctx.message.message_id
             });
-            console.log(`✅ ${ctx.from.first_name} verified in ${ctx.chat.title}`);
+            
+            // Remove from database
+            await db.deleteCaptcha(userId, groupId);
+            
+            console.log(`✅ ${ctx.from.first_name} verified successfully in ${ctx.chat.title}`);
         } catch (error) {
             console.error('Error handling correct answer:', error);
         }
-    } else if (result.reason === 'wrong_answer') {
-        const attemptsLeft = settings.max_attempts - (result.attempts || 0);
-        
-        if (attemptsLeft > 0) {
-            await ctx.reply(`❌ Wrong answer! ${attemptsLeft} attempts remaining.`, {
-                reply_to_message_id: ctx.message.message_id
-            });
-        } else {
-            try {
-                await ctx.deleteMessage(captchaInfo.message_id);
+    } else {
+        // WRONG ANSWER - Update attempt count and possibly punish
+        try {
+            // Get current attempt count
+            const currentAttempts = captchaInfo.attempt_count || 0;
+            const newAttempts = currentAttempts + 1;
+            const maxAttempts = settings.max_attempts || 3;
+            
+            console.log(`Wrong answer from ${ctx.from.first_name}. Attempt ${newAttempts}/${maxAttempts}`);
+            
+            // Update attempt count in database
+            await pool.query(
+                'UPDATE pending_captcha SET attempt_count = $1 WHERE user_id = $2 AND group_id = $3',
+                [newAttempts, userId, groupId]
+            );
+            
+            if (newAttempts >= maxAttempts) {
+                // TOO MANY WRONG ATTEMPTS - Apply punishment
+                console.log(`User ${ctx.from.first_name} exceeded max attempts. Applying punishment: ${settings.punishment_action}`);
+                
+                // Delete the captcha message
+                await ctx.deleteMessage(captchaInfo.message_id).catch(e => console.log('Could not delete message:', e.message));
+                
+                // Apply the configured punishment
                 await applyPunishment(ctx, groupId, userId, settings.punishment_action, 'Too many wrong attempts');
+                
+                // Remove from database
                 await db.deleteCaptcha(userId, groupId);
-            } catch (error) {
-                console.error('Error applying punishment:', error);
+            } else {
+                // Still have attempts left
+                await ctx.reply(`❌ Wrong answer! ${maxAttempts - newAttempts} attempts remaining.`, {
+                    reply_to_message_id: ctx.message.message_id
+                });
             }
+        } catch (error) {
+            console.error('Error handling wrong answer:', error);
         }
     }
 });

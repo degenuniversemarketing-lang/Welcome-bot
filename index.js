@@ -69,63 +69,18 @@ function getSession(userId) {
     return sessions.get(userId);
 }
 
-// ============ CAPTCHA GENERATORS ============
-function generateMathCaptcha(difficulty = 'medium') {
-    let a, b;
-    
-    switch(difficulty) {
-        case 'easy':
-            a = Math.floor(Math.random() * 5) + 1;
-            b = Math.floor(Math.random() * 5) + 1;
-            break;
-        case 'hard':
-            a = Math.floor(Math.random() * 50) + 1;
-            b = Math.floor(Math.random() * 50) + 1;
-            break;
-        case 'medium':
-        default:
-            a = Math.floor(Math.random() * 10) + 1;
-            b = Math.floor(Math.random() * 10) + 1;
-    }
+// ============ SIMPLE BUTTON CAPTCHA (GUARANTEED TO WORK) ============
+function generateButtonCaptcha() {
+    // Generate a random 4-digit code
+    const code = Math.floor(1000 + Math.random() * 9000).toString();
     
     return {
-        question: `🧮 **Math Problem**\n${a} + ${b} = ?`,
-        answer: (a + b).toString()
+        question: `🔐 **Verification Required**\n\nPlease click the button below to verify you're human.`,
+        answer: code,
+        buttons: [
+            Markup.button.callback('✅ Click to Verify', `verify_${code}`)
+        ]
     };
-}
-
-function generateEmojiCaptcha() {
-    const emojis = ['🐶', '🐱', '🐭', '🐹', '🐰', '🦊', '🐻', '🐼'];
-    const count = Math.floor(Math.random() * 5) + 3;
-    const emoji = emojis[Math.floor(Math.random() * emojis.length)];
-    const emojiString = emoji.repeat(count);
-    
-    return {
-        question: `🔢 **Count the Emojis**\n${emojiString}\n\nHow many ${emoji} do you see?`,
-        answer: count.toString()
-    };
-}
-
-function generateTextCaptcha() {
-    const words = ['welcome', 'verify', 'robot', 'human', 'guard', 'security'];
-    const word = words[Math.floor(Math.random() * words.length)];
-    
-    return {
-        question: `📝 **Type the Word**\nType this word exactly:\n\`${word}\``,
-        answer: word
-    };
-}
-
-function generateCaptcha(type = 'math', difficulty = 'medium') {
-    switch(type) {
-        case 'emoji':
-            return generateEmojiCaptcha();
-        case 'text':
-            return generateTextCaptcha();
-        case 'math':
-        default:
-            return generateMathCaptcha(difficulty);
-    }
 }
 
 // ============ PUNISHMENT HANDLER ============
@@ -250,8 +205,8 @@ Group: ${ctx.chat.title}
 📝 Welcome: ${settings.welcome_text.substring(0, 30)}...
 🖼️ Image: ${settings.welcome_image ? '✅' : '❌'}
 🔘 Buttons: ${settings.welcome_buttons ? '✅' : '❌'}
-🎯 Captcha: ${settings.captcha_type}
-⚡ Difficulty: ${settings.captcha_difficulty}
+🎯 Captcha: Button-based (Always works)
+⚡ Difficulty: N/A
 ⏰ Timeout: ${settings.captcha_time}s
 ⚖️ Punishment: ${punishmentEmoji[settings.punishment_action]} ${settings.punishment_action}
 🔄 Max Attempts: ${settings.max_attempts}
@@ -267,10 +222,6 @@ Select an option to configure:
         ],
         [
             Markup.button.callback('🔘 Welcome Buttons', `edit_buttons_${groupId}`),
-            Markup.button.callback('🎯 Captcha Type', `edit_type_${groupId}`)
-        ],
-        [
-            Markup.button.callback('⚡ Difficulty', `edit_diff_${groupId}`),
             Markup.button.callback('⏰ Timeout', `edit_time_${groupId}`)
         ],
         [
@@ -531,86 +482,6 @@ bot.action(/remove_buttons_(.+)/, async (ctx) => {
     await showGroupAdminPanel(ctx, groupId);
 });
 
-// Captcha Type Selection
-bot.action(/edit_type_(.+)/, async (ctx) => {
-    const groupId = ctx.match[1];
-    
-    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
-        return ctx.answerCbQuery('❌ You are not an admin of this group');
-    }
-    
-    const keyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('🧮 Math', `set_type_${groupId}_math`)],
-        [Markup.button.callback('🔢 Emoji Count', `set_type_${groupId}_emoji`)],
-        [Markup.button.callback('📝 Text Typing', `set_type_${groupId}_text`)],
-        [Markup.button.callback('◀️ Back', `back_to_panel_${groupId}`)]
-    ]);
-    
-    await ctx.editMessageText('🎯 **Select Captcha Type:**', {
-        parse_mode: 'Markdown',
-        ...keyboard
-    });
-});
-
-bot.action(/set_type_(.+)_(.+)/, async (ctx) => {
-    const groupId = ctx.match[1];
-    const captchaType = ctx.match[2];
-    
-    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
-        return ctx.answerCbQuery('❌ You are not an admin of this group');
-    }
-    
-    await db.updateGroupSettings(groupId, { captcha_type: captchaType });
-    await ctx.answerCbQuery(`✅ Captcha type set to ${captchaType}`);
-    
-    try {
-        await ctx.deleteMessage();
-    } catch (e) {}
-    
-    ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.callbackQuery.message.chat.title };
-    await showGroupAdminPanel(ctx, groupId);
-});
-
-// Difficulty Selection
-bot.action(/edit_diff_(.+)/, async (ctx) => {
-    const groupId = ctx.match[1];
-    
-    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
-        return ctx.answerCbQuery('❌ You are not an admin of this group');
-    }
-    
-    const keyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('🟢 Easy', `set_diff_${groupId}_easy`)],
-        [Markup.button.callback('🟡 Medium', `set_diff_${groupId}_medium`)],
-        [Markup.button.callback('🔴 Hard', `set_diff_${groupId}_hard`)],
-        [Markup.button.callback('◀️ Back', `back_to_panel_${groupId}`)]
-    ]);
-    
-    await ctx.editMessageText('⚡ **Select Difficulty Level:**', {
-        parse_mode: 'Markdown',
-        ...keyboard
-    });
-});
-
-bot.action(/set_diff_(.+)_(.+)/, async (ctx) => {
-    const groupId = ctx.match[1];
-    const difficulty = ctx.match[2];
-    
-    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
-        return ctx.answerCbQuery('❌ You are not an admin of this group');
-    }
-    
-    await db.updateGroupSettings(groupId, { captcha_difficulty: difficulty });
-    await ctx.answerCbQuery(`✅ Difficulty set to ${difficulty}`);
-    
-    try {
-        await ctx.deleteMessage();
-    } catch (e) {}
-    
-    ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.callbackQuery.message.chat.title };
-    await showGroupAdminPanel(ctx, groupId);
-});
-
 // Timeout Setting
 bot.action(/edit_time_(.+)/, async (ctx) => {
     const groupId = ctx.match[1];
@@ -789,6 +660,47 @@ bot.action(/back_to_panel_(.+)/, async (ctx) => {
     
     ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.callbackQuery.message.chat.title };
     await showGroupAdminPanel(ctx, groupId);
+});
+
+// ============ BUTTON CAPTCHA HANDLER ============
+bot.action(/verify_(\d+)/, async (ctx) => {
+    try {
+        const userId = ctx.from.id.toString();
+        const groupId = ctx.chat.id.toString();
+        const verificationCode = ctx.match[1];
+        
+        console.log(`🔘 Button clicked by ${ctx.from.first_name} with code: ${verificationCode}`);
+        
+        // Get captcha info for this user
+        const captchaInfo = await db.getCaptchaInfo(userId, groupId);
+        
+        if (!captchaInfo) {
+            await ctx.answerCbQuery('❌ No active captcha found!');
+            return;
+        }
+        
+        // Check if the code matches
+        if (captchaInfo.correct_answer === verificationCode) {
+            // ✅ Correct verification
+            await ctx.answerCbQuery('✅ Verified! Welcome to the group!');
+            
+            // Delete the captcha message
+            await ctx.deleteMessage(captchaInfo.message_id).catch(e => {});
+            
+            // Send welcome message
+            await ctx.reply(`✅ **Verified!** Welcome to the group, ${ctx.from.first_name}! 🎉`);
+            
+            // Remove from database
+            await db.deleteCaptcha(userId, groupId);
+            
+            console.log(`✅ ${ctx.from.first_name} verified via button!`);
+        } else {
+            await ctx.answerCbQuery('❌ Invalid verification!');
+        }
+    } catch (error) {
+        console.error('Error in button handler:', error);
+        await ctx.answerCbQuery('❌ Error occurred');
+    }
 });
 
 // ============ TEXT HANDLERS ============
@@ -997,25 +909,15 @@ bot.on(message('new_chat_members'), async (ctx) => {
         processedJoins.add(joinKey);
         setTimeout(() => processedJoins.delete(joinKey), 60000);
         
-        const captcha = generateCaptcha(settings.captcha_type, settings.captcha_difficulty);
+        // Generate button captcha
+        const captcha = generateButtonCaptcha();
         
         let welcomeText = settings.welcome_text;
         welcomeText = welcomeText.replace(/{user}/g, member.first_name);
         welcomeText = welcomeText.replace(/{group}/g, ctx.chat.title);
         
-        let replyMarkup = {};
-        if (settings.welcome_buttons) {
-            const buttons = [];
-            if (settings.button1_text && settings.button1_url) {
-                buttons.push([Markup.button.url(settings.button1_text, settings.button1_url)]);
-            }
-            if (settings.button2_text && settings.button2_url) {
-                buttons.push([Markup.button.url(settings.button2_text, settings.button2_url)]);
-            }
-            if (buttons.length > 0) {
-                replyMarkup = { inline_keyboard: buttons };
-            }
-        }
+        // Create inline keyboard with verify button
+        const keyboard = Markup.inlineKeyboard([captcha.buttons]);
         
         const captchaMessage = `${welcomeText}\n\n${captcha.question}\n\n_⏰ Timeout: ${settings.captcha_time} seconds_`;
         
@@ -1026,12 +928,12 @@ bot.on(message('new_chat_members'), async (ctx) => {
                 sentMessage = await ctx.replyWithPhoto(settings.welcome_image, {
                     caption: captchaMessage,
                     parse_mode: 'Markdown',
-                    reply_markup: replyMarkup
+                    reply_markup: keyboard.reply_markup
                 });
             } else {
                 sentMessage = await ctx.reply(captchaMessage, {
                     parse_mode: 'Markdown',
-                    reply_markup: replyMarkup
+                    reply_markup: keyboard.reply_markup
                 });
             }
             
@@ -1048,178 +950,10 @@ bot.on(message('new_chat_members'), async (ctx) => {
                 expireAt
             );
             
-            console.log(`🆕 Captcha sent to ${member.first_name} in ${ctx.chat.title}`);
+            console.log(`🆕 Button captcha sent to ${member.first_name} in ${ctx.chat.title} with code: ${captcha.answer}`);
         } catch (error) {
             console.error('Error sending captcha:', error);
         }
-    }
-});
-
-// ============ SIMPLIFIED CAPTCHA ANSWER HANDLER - GUARANTEED WORKING ============
-bot.on('text', async (ctx) => {
-    // Only process in groups
-    if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') return;
-    
-    try {
-        const groupId = ctx.chat.id.toString();
-        const userId = ctx.from.id.toString();
-        const answer = ctx.message.text.trim();
-        
-        console.log(`\n🔍 CAPTCHA CHECK:`);
-        console.log(`User: ${ctx.from.first_name} (${userId})`);
-        console.log(`Answer: "${answer}"`);
-        
-        // Check if this is a reply to a message
-        if (!ctx.message.reply_to_message) {
-            console.log('❌ Not a reply message - ignoring');
-            return;
-        }
-        
-        console.log(`Reply to message ID: ${ctx.message.reply_to_message.message_id}`);
-        
-        // Get ALL captchas for this group to debug
-        const allCaptchas = await db.pool.query(
-            'SELECT * FROM pending_captcha WHERE group_id = $1',
-            [groupId]
-        );
-        console.log(`Total pending captchas in group: ${allCaptchas.rows.length}`);
-        
-        if (allCaptchas.rows.length > 0) {
-            console.log('Pending captchas:');
-            allCaptchas.rows.forEach(c => {
-                console.log(`  - User: ${c.first_name} (${c.user_id}), MsgID: ${c.message_id}, Answer: "${c.correct_answer}"`);
-            });
-        }
-        
-        // Get captcha for this specific user
-        const captchaInfo = await db.getCaptchaInfo(userId, groupId);
-        
-        if (!captchaInfo) {
-            console.log(`❌ No captcha found for user ${userId}`);
-            
-            // Check if they're replying to someone else's captcha
-            const repliedToId = ctx.message.reply_to_message.message_id;
-            const otherCaptcha = await db.pool.query(
-                'SELECT * FROM pending_captcha WHERE group_id = $1 AND message_id = $2',
-                [groupId, repliedToId]
-            );
-            
-            if (otherCaptcha.rows.length > 0) {
-                const otherUser = otherCaptcha.rows[0];
-                await ctx.reply(`❌ This captcha is for ${otherUser.first_name}, not for you!`, {
-                    reply_to_message_id: ctx.message.message_id
-                });
-                console.log(`⚠️ User tried to answer for ${otherUser.first_name}`);
-            }
-            return;
-        }
-        
-        console.log(`✅ Found captcha for user:`);
-        console.log(`  - Expected answer: "${captchaInfo.correct_answer}"`);
-        console.log(`  - Message ID: ${captchaInfo.message_id}`);
-        console.log(`  - Attempts: ${captchaInfo.attempt_count || 0}`);
-        
-        // Verify correct message
-        if (ctx.message.reply_to_message.message_id !== captchaInfo.message_id) {
-            console.log(`❌ Wrong message ID - user replied to ${ctx.message.reply_to_message.message_id}, captcha is at ${captchaInfo.message_id}`);
-            await ctx.reply(`❌ Please reply directly to your captcha message.`, {
-                reply_to_message_id: ctx.message.message_id
-            });
-            return;
-        }
-        
-        console.log(`✅ Correct message ID match!`);
-        
-        // Get settings
-        const settings = await db.getGroupSettings(groupId);
-        
-        // SIMPLE COMPARISON - Convert both to strings and compare
-        const userAnswer = answer.toString().trim();
-        const correctAnswer = captchaInfo.correct_answer.toString().trim();
-        
-        console.log(`Comparing: "${userAnswer}" vs "${correctAnswer}"`);
-        
-        // Try direct string comparison first
-        let isCorrect = (userAnswer === correctAnswer);
-        
-        // If not, try number comparison (for math)
-        if (!isCorrect) {
-            const userNum = parseInt(userAnswer);
-            const correctNum = parseInt(correctAnswer);
-            if (!isNaN(userNum) && !isNaN(correctNum) && userNum === correctNum) {
-                isCorrect = true;
-                console.log('✅ Match via number comparison');
-            }
-        }
-        
-        // If still not, try lowercase comparison (for text)
-        if (!isCorrect) {
-            if (userAnswer.toLowerCase() === correctAnswer.toLowerCase()) {
-                isCorrect = true;
-                console.log('✅ Match via lowercase comparison');
-            }
-        }
-        
-        console.log(`Final result: ${isCorrect ? '✅ CORRECT' : '❌ WRONG'}`);
-        
-        if (isCorrect) {
-            // ✅ CORRECT ANSWER
-            console.log(`🎉 ${ctx.from.first_name} answered correctly! Verifying...`);
-            
-            try {
-                // Delete captcha message
-                await ctx.deleteMessage(captchaInfo.message_id).catch(e => {
-                    console.log('Could not delete message:', e.message);
-                });
-                
-                // Send welcome message
-                await ctx.reply(`✅ **Verified!** Welcome to the group, ${ctx.from.first_name}! 🎉`, {
-                    parse_mode: 'Markdown',
-                    reply_to_message_id: ctx.message.message_id
-                });
-                
-                // Remove from database
-                await db.deleteCaptcha(userId, groupId);
-                
-                console.log(`✅ ${ctx.from.first_name} verified successfully!`);
-            } catch (error) {
-                console.error('Error in correct answer handling:', error);
-            }
-        } else {
-            // ❌ WRONG ANSWER
-            console.log(`❌ ${ctx.from.first_name} gave wrong answer`);
-            
-            try {
-                const currentAttempts = (captchaInfo.attempt_count || 0) + 1;
-                const maxAttempts = settings.max_attempts || 3;
-                
-                console.log(`Attempt ${currentAttempts}/${maxAttempts}`);
-                
-                // Update attempt count
-                await db.pool.query(
-                    'UPDATE pending_captcha SET attempt_count = $1 WHERE user_id = $2 AND group_id = $3',
-                    [currentAttempts, userId, groupId]
-                );
-                
-                if (currentAttempts >= maxAttempts) {
-                    // Too many wrong - punish
-                    console.log(`Punishing ${ctx.from.first_name} with ${settings.punishment_action}`);
-                    
-                    await ctx.deleteMessage(captchaInfo.message_id).catch(e => {});
-                    await applyPunishment(ctx, groupId, userId, settings.punishment_action, 'Too many wrong attempts');
-                    await db.deleteCaptcha(userId, groupId);
-                } else {
-                    // Still have attempts left
-                    await ctx.reply(`❌ Wrong answer! ${maxAttempts - currentAttempts} attempt(s) left.`, {
-                        reply_to_message_id: ctx.message.message_id
-                    });
-                }
-            } catch (error) {
-                console.error('Error in wrong answer handling:', error);
-            }
-        }
-    } catch (error) {
-        console.error('CRITICAL ERROR in captcha handler:', error);
     }
 });
 

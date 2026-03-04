@@ -141,7 +141,6 @@ async function applyPunishment(ctx, groupId, userId, action, reason = 'Failed ca
                 await ctx.reply(`👢 User kicked for: ${reason}`);
                 break;
             case 'mute':
-                // Mute for 1 hour (or configured time)
                 const untilDate = Math.floor(Date.now() / 1000) + 3600;
                 await ctx.telegram.restrictChatMember(groupId, parseInt(userId), {
                     permissions: {
@@ -159,7 +158,6 @@ async function applyPunishment(ctx, groupId, userId, action, reason = 'Failed ca
                 await ctx.reply(`🔇 User muted for 1 hour for: ${reason}`);
                 break;
             case 'remove':
-                // Just remove from pending, no punishment
                 await ctx.reply(`⚠️ User removed from verification for: ${reason}`);
                 break;
         }
@@ -177,7 +175,6 @@ async function cleanExpiredCaptchas() {
             try {
                 const settings = await db.getGroupSettings(captcha.group_id);
                 
-                // Apply configured punishment
                 if (settings && settings.punishment_action) {
                     await applyPunishment(
                         { telegram: bot.telegram },
@@ -188,10 +185,7 @@ async function cleanExpiredCaptchas() {
                     );
                 }
                 
-                // Delete the captcha message
                 await bot.telegram.deleteMessage(captcha.group_id, captcha.message_id).catch(() => {});
-                
-                // Remove from database
                 await db.deleteCaptcha(captcha.user_id, captcha.group_id);
                 
                 console.log(`⏰ Expired: ${captcha.first_name} (${captcha.user_id}) in ${captcha.group_id}`);
@@ -207,16 +201,13 @@ async function cleanExpiredCaptchas() {
 // ============ CHECK GROUP ADMIN ============
 async function checkGroupAdmin(ctx, groupId, userId) {
     try {
-        // Check if user is super admin
         if (userId.toString() === SUPER_ADMIN_ID) {
             return true;
         }
         
-        // Check if user is group admin in database
         const isAdmin = await db.isGroupAdmin(groupId, userId.toString());
         if (isAdmin) return true;
         
-        // Check if user is actual Telegram group admin
         const chatMember = await ctx.telegram.getChatMember(groupId, parseInt(userId));
         const isTelegramAdmin = ['creator', 'administrator'].includes(chatMember.status);
         
@@ -404,6 +395,580 @@ bot.start(async (ctx) => {
     }
 });
 
+// ============ INLINE BUTTON HANDLERS ============
+
+// Edit Welcome Text
+bot.action(/edit_welcome_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    await ctx.editMessageText(
+        `📝 **Edit Welcome Text**\n\n` +
+        `Send the new welcome message.\n` +
+        `Use {user} for member name and {group} for group name.\n\n` +
+        `Example: "Welcome {user} to {group}! Please verify:"\n\n` +
+        `_Current: ${(await db.getGroupSettings(groupId)).welcome_text}_\n\n` +
+        `Send /cancel to cancel.`,
+        { parse_mode: 'Markdown' }
+    );
+    
+    const session = getSession(ctx.from.id.toString());
+    session.waitingForWelcome = groupId;
+    await ctx.answerCbQuery();
+});
+
+// Edit Welcome Image
+bot.action(/edit_image_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    await ctx.editMessageText(
+        `🖼️ **Edit Welcome Image**\n\n` +
+        `Send a photo or image URL to show with welcome message.\n\n` +
+        `_Current: ${(await db.getGroupSettings(groupId)).welcome_image || 'No image'}_\n\n` +
+        `Send /cancel to cancel.`,
+        { parse_mode: 'Markdown' }
+    );
+    
+    const session = getSession(ctx.from.id.toString());
+    session.waitingForImage = groupId;
+    await ctx.answerCbQuery();
+});
+
+// Edit Welcome Buttons
+bot.action(/edit_buttons_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('➕ Add Button 1', `add_button1_${groupId}`)],
+        [Markup.button.callback('➕ Add Button 2', `add_button2_${groupId}`)],
+        [Markup.button.callback('❌ Remove Buttons', `remove_buttons_${groupId}`)],
+        [Markup.button.callback('◀️ Back', `back_to_panel_${groupId}`)]
+    ]);
+    
+    await ctx.editMessageText('🔘 **Configure Welcome Buttons**\n\nYou can add up to 2 buttons with custom text and URLs.', {
+        parse_mode: 'Markdown',
+        ...keyboard
+    });
+});
+
+// Add Button 1
+bot.action(/add_button1_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    await ctx.editMessageText(
+        `🔘 **Add Button 1**\n\n` +
+        `Send button text and URL in this format:\n` +
+        `Button Text | https://example.com\n\n` +
+        `Example: "Visit Website | https://google.com"`,
+        { parse_mode: 'Markdown' }
+    );
+    
+    const session = getSession(ctx.from.id.toString());
+    session.waitingForButton1 = groupId;
+    await ctx.answerCbQuery();
+});
+
+// Add Button 2
+bot.action(/add_button2_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    await ctx.editMessageText(
+        `🔘 **Add Button 2**\n\n` +
+        `Send button text and URL in this format:\n` +
+        `Button Text | https://example.com\n\n` +
+        `Example: "Join Channel | https://t.me/yourchannel"`,
+        { parse_mode: 'Markdown' }
+    );
+    
+    const session = getSession(ctx.from.id.toString());
+    session.waitingForButton2 = groupId;
+    await ctx.answerCbQuery();
+});
+
+// Remove Buttons
+bot.action(/remove_buttons_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    await db.updateGroupSettings(groupId, {
+        welcome_buttons: false,
+        button1_text: null,
+        button1_url: null,
+        button2_text: null,
+        button2_url: null
+    });
+    
+    await ctx.answerCbQuery('✅ Buttons removed');
+    
+    try {
+        await ctx.deleteMessage();
+    } catch (e) {}
+    
+    ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.callbackQuery.message.chat.title };
+    await showGroupAdminPanel(ctx, groupId);
+});
+
+// Captcha Type Selection
+bot.action(/edit_type_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('🧮 Math', `set_type_${groupId}_math`)],
+        [Markup.button.callback('🔢 Emoji Count', `set_type_${groupId}_emoji`)],
+        [Markup.button.callback('📝 Text Typing', `set_type_${groupId}_text`)],
+        [Markup.button.callback('◀️ Back', `back_to_panel_${groupId}`)]
+    ]);
+    
+    await ctx.editMessageText('🎯 **Select Captcha Type:**', {
+        parse_mode: 'Markdown',
+        ...keyboard
+    });
+});
+
+bot.action(/set_type_(.+)_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    const captchaType = ctx.match[2];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    await db.updateGroupSettings(groupId, { captcha_type: captchaType });
+    await ctx.answerCbQuery(`✅ Captcha type set to ${captchaType}`);
+    
+    try {
+        await ctx.deleteMessage();
+    } catch (e) {}
+    
+    ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.callbackQuery.message.chat.title };
+    await showGroupAdminPanel(ctx, groupId);
+});
+
+// Difficulty Selection
+bot.action(/edit_diff_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('🟢 Easy', `set_diff_${groupId}_easy`)],
+        [Markup.button.callback('🟡 Medium', `set_diff_${groupId}_medium`)],
+        [Markup.button.callback('🔴 Hard', `set_diff_${groupId}_hard`)],
+        [Markup.button.callback('◀️ Back', `back_to_panel_${groupId}`)]
+    ]);
+    
+    await ctx.editMessageText('⚡ **Select Difficulty Level:**', {
+        parse_mode: 'Markdown',
+        ...keyboard
+    });
+});
+
+bot.action(/set_diff_(.+)_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    const difficulty = ctx.match[2];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    await db.updateGroupSettings(groupId, { captcha_difficulty: difficulty });
+    await ctx.answerCbQuery(`✅ Difficulty set to ${difficulty}`);
+    
+    try {
+        await ctx.deleteMessage();
+    } catch (e) {}
+    
+    ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.callbackQuery.message.chat.title };
+    await showGroupAdminPanel(ctx, groupId);
+});
+
+// Timeout Setting
+bot.action(/edit_time_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    await ctx.editMessageText(
+        `⏰ **Set Captcha Timeout**\n\n` +
+        `Send the timeout in seconds (30-600).\n` +
+        `_Current: ${(await db.getGroupSettings(groupId)).captcha_time} seconds_\n\n` +
+        `Send /cancel to cancel.`,
+        { parse_mode: 'Markdown' }
+    );
+    
+    const session = getSession(ctx.from.id.toString());
+    session.waitingForTimeout = groupId;
+    await ctx.answerCbQuery();
+});
+
+// Punishment Selection
+bot.action(/edit_punishment_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('👢 Kick', `set_punishment_${groupId}_kick`)],
+        [Markup.button.callback('🚫 Ban', `set_punishment_${groupId}_ban`)],
+        [Markup.button.callback('🔇 Mute', `set_punishment_${groupId}_mute`)],
+        [Markup.button.callback('⚠️ Remove Only', `set_punishment_${groupId}_remove`)],
+        [Markup.button.callback('◀️ Back', `back_to_panel_${groupId}`)]
+    ]);
+    
+    await ctx.editMessageText('⚖️ **Select Punishment Action**\n\nChoose what happens when user fails captcha:', {
+        parse_mode: 'Markdown',
+        ...keyboard
+    });
+});
+
+bot.action(/set_punishment_(.+)_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    const punishment = ctx.match[2];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    await db.updateGroupSettings(groupId, { punishment_action: punishment });
+    await ctx.answerCbQuery(`✅ Punishment set to ${punishment}`);
+    
+    try {
+        await ctx.deleteMessage();
+    } catch (e) {}
+    
+    ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.callbackQuery.message.chat.title };
+    await showGroupAdminPanel(ctx, groupId);
+});
+
+// Max Attempts Setting
+bot.action(/edit_attempts_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    await ctx.editMessageText(
+        `🔄 **Set Maximum Attempts**\n\n` +
+        `Send the number of allowed attempts (1-5).\n` +
+        `_Current: ${(await db.getGroupSettings(groupId)).max_attempts}_\n\n` +
+        `Send /cancel to cancel.`,
+        { parse_mode: 'Markdown' }
+    );
+    
+    const session = getSession(ctx.from.id.toString());
+    session.waitingForAttempts = groupId;
+    await ctx.answerCbQuery();
+});
+
+// Toggle Delete Join Message
+bot.action(/toggle_join_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    const settings = await db.getGroupSettings(groupId);
+    const newValue = !settings.delete_join_message;
+    
+    await db.updateGroupSettings(groupId, { delete_join_message: newValue });
+    await ctx.answerCbQuery(`✅ Delete join message: ${newValue ? 'ON' : 'OFF'}`);
+    
+    try {
+        await ctx.deleteMessage();
+    } catch (e) {}
+    
+    ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.callbackQuery.message.chat.title };
+    await showGroupAdminPanel(ctx, groupId);
+});
+
+// Manage Admins
+bot.action(/manage_admins_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    const admins = await db.getGroupAdmins(groupId);
+    
+    let message = `👥 **Group Admins**\n\n`;
+    if (admins.length === 0) {
+        message += `No admins found.\n`;
+    } else {
+        admins.forEach((admin, index) => {
+            message += `${index + 1}. @${admin.admin_username || 'Unknown'} (${admin.admin_id})\n`;
+        });
+    }
+    message += `\nTo add an admin, they just need to use /start in this group.`;
+    
+    const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('◀️ Back', `back_to_panel_${groupId}`)]
+    ]);
+    
+    await ctx.editMessageText(message, { parse_mode: 'Markdown', ...keyboard });
+});
+
+// Group Stats
+bot.action(/group_stats_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    const pendingCount = await db.getPendingCountForGroup ? 
+        await db.getPendingCountForGroup(groupId) : 0;
+    
+    const message = `
+📊 **Group Statistics**
+Group: ${ctx.callbackQuery.message.chat.title}
+
+**Overview:**
+👥 Total Admins: ${(await db.getGroupAdmins(groupId)).length}
+⏳ Pending Captchas: ${pendingCount}
+    `;
+    
+    const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('◀️ Back', `back_to_panel_${groupId}`)]
+    ]);
+    
+    await ctx.editMessageText(message, { parse_mode: 'Markdown', ...keyboard });
+});
+
+// Close Panel
+bot.action(/close_panel_(.+)/, async (ctx) => {
+    await ctx.deleteMessage();
+});
+
+// Back to Panel
+bot.action(/back_to_panel_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    try {
+        await ctx.deleteMessage();
+    } catch (e) {}
+    
+    ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.callbackQuery.message.chat.title };
+    await showGroupAdminPanel(ctx, groupId);
+});
+
+// ============ TEXT HANDLERS ============
+bot.on('text', async (ctx) => {
+    const session = getSession(ctx.from.id.toString());
+    
+    // Handle waiting for welcome text
+    if (session.waitingForWelcome) {
+        const groupId = session.waitingForWelcome;
+        
+        if (ctx.message.text === '/cancel') {
+            delete session.waitingForWelcome;
+            return ctx.reply('❌ Cancelled.');
+        }
+        
+        if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+            delete session.waitingForWelcome;
+            return ctx.reply('❌ You are not an admin of this group');
+        }
+        
+        await db.updateGroupSettings(groupId, { welcome_text: ctx.message.text });
+        delete session.waitingForWelcome;
+        
+        await ctx.reply('✅ Welcome text updated!');
+        
+        ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
+        await showGroupAdminPanel(ctx, groupId);
+        return;
+    }
+    
+    // Handle waiting for image
+    if (session.waitingForImage) {
+        const groupId = session.waitingForImage;
+        
+        if (ctx.message.text === '/cancel') {
+            delete session.waitingForImage;
+            return ctx.reply('❌ Cancelled.');
+        }
+        
+        if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+            delete session.waitingForImage;
+            return ctx.reply('❌ You are not an admin of this group');
+        }
+        
+        const url = ctx.message.text.trim();
+        if (url.startsWith('http://') || url.startsWith('https://')) {
+            await db.updateGroupSettings(groupId, { welcome_image: url });
+            delete session.waitingForImage;
+            await ctx.reply('✅ Welcome image URL saved!');
+        } else {
+            return ctx.reply('❌ Please send a valid URL starting with http:// or https://');
+        }
+        
+        ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
+        await showGroupAdminPanel(ctx, groupId);
+        return;
+    }
+    
+    // Handle waiting for button 1
+    if (session.waitingForButton1) {
+        const groupId = session.waitingForButton1;
+        
+        if (ctx.message.text === '/cancel') {
+            delete session.waitingForButton1;
+            return ctx.reply('❌ Cancelled.');
+        }
+        
+        if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+            delete session.waitingForButton1;
+            return ctx.reply('❌ You are not an admin of this group');
+        }
+        
+        const parts = ctx.message.text.split('|').map(s => s.trim());
+        if (parts.length === 2 && parts[1].startsWith('http')) {
+            await db.updateGroupSettings(groupId, {
+                welcome_buttons: true,
+                button1_text: parts[0],
+                button1_url: parts[1]
+            });
+            delete session.waitingForButton1;
+            await ctx.reply('✅ Button 1 added!');
+        } else {
+            return ctx.reply('❌ Invalid format. Use: Button Text | https://example.com');
+        }
+        
+        ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
+        await showGroupAdminPanel(ctx, groupId);
+        return;
+    }
+    
+    // Handle waiting for button 2
+    if (session.waitingForButton2) {
+        const groupId = session.waitingForButton2;
+        
+        if (ctx.message.text === '/cancel') {
+            delete session.waitingForButton2;
+            return ctx.reply('❌ Cancelled.');
+        }
+        
+        if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+            delete session.waitingForButton2;
+            return ctx.reply('❌ You are not an admin of this group');
+        }
+        
+        const parts = ctx.message.text.split('|').map(s => s.trim());
+        if (parts.length === 2 && parts[1].startsWith('http')) {
+            await db.updateGroupSettings(groupId, {
+                welcome_buttons: true,
+                button2_text: parts[0],
+                button2_url: parts[1]
+            });
+            delete session.waitingForButton2;
+            await ctx.reply('✅ Button 2 added!');
+        } else {
+            return ctx.reply('❌ Invalid format. Use: Button Text | https://example.com');
+        }
+        
+        ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
+        await showGroupAdminPanel(ctx, groupId);
+        return;
+    }
+    
+    // Handle waiting for timeout
+    if (session.waitingForTimeout) {
+        const groupId = session.waitingForTimeout;
+        
+        if (ctx.message.text === '/cancel') {
+            delete session.waitingForTimeout;
+            return ctx.reply('❌ Cancelled.');
+        }
+        
+        if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+            delete session.waitingForTimeout;
+            return ctx.reply('❌ You are not an admin of this group');
+        }
+        
+        const timeout = parseInt(ctx.message.text);
+        if (isNaN(timeout) || timeout < 30 || timeout > 600) {
+            return ctx.reply('❌ Please send a number between 30 and 600.');
+        }
+        
+        await db.updateGroupSettings(groupId, { captcha_time: timeout });
+        delete session.waitingForTimeout;
+        
+        await ctx.reply(`✅ Timeout set to ${timeout} seconds!`);
+        
+        ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
+        await showGroupAdminPanel(ctx, groupId);
+        return;
+    }
+    
+    // Handle waiting for max attempts
+    if (session.waitingForAttempts) {
+        const groupId = session.waitingForAttempts;
+        
+        if (ctx.message.text === '/cancel') {
+            delete session.waitingForAttempts;
+            return ctx.reply('❌ Cancelled.');
+        }
+        
+        if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+            delete session.waitingForAttempts;
+            return ctx.reply('❌ You are not an admin of this group');
+        }
+        
+        const attempts = parseInt(ctx.message.text);
+        if (isNaN(attempts) || attempts < 1 || attempts > 5) {
+            return ctx.reply('❌ Please send a number between 1 and 5.');
+        }
+        
+        await db.updateGroupSettings(groupId, { max_attempts: attempts });
+        delete session.waitingForAttempts;
+        
+        await ctx.reply(`✅ Max attempts set to ${attempts}!`);
+        
+        ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
+        await showGroupAdminPanel(ctx, groupId);
+        return;
+    }
+});
+
 // ============ NEW MEMBER HANDLER ============
 bot.on(message('new_chat_members'), async (ctx) => {
     const newMembers = ctx.message.new_chat_members;
@@ -415,7 +980,6 @@ bot.on(message('new_chat_members'), async (ctx) => {
     const settings = await db.getGroupSettings(groupId);
     if (!settings) return;
     
-    // Delete Telegram's join message if enabled
     if (settings.delete_join_message) {
         try {
             await ctx.deleteMessage(ctx.message.message_id);
@@ -434,32 +998,39 @@ bot.on(message('new_chat_members'), async (ctx) => {
         
         const captcha = generateCaptcha(settings.captcha_type, settings.captcha_difficulty);
         
-        // Format welcome message
         let welcomeText = settings.welcome_text;
         welcomeText = welcomeText.replace(/{user}/g, member.first_name);
         welcomeText = welcomeText.replace(/{group}/g, ctx.chat.title);
         
-        // Prepare message with optional image
-        let captchaMessage = `${welcomeText}\n\n${captcha.question}\n\n_⏰ Timeout: ${settings.captcha_time} seconds_`;
+        let replyMarkup = {};
+        if (settings.welcome_buttons) {
+            const buttons = [];
+            if (settings.button1_text && settings.button1_url) {
+                buttons.push([Markup.button.url(settings.button1_text, settings.button1_url)]);
+            }
+            if (settings.button2_text && settings.button2_url) {
+                buttons.push([Markup.button.url(settings.button2_text, settings.button2_url)]);
+            }
+            if (buttons.length > 0) {
+                replyMarkup = { inline_keyboard: buttons };
+            }
+        }
+        
+        const captchaMessage = `${welcomeText}\n\n${captcha.question}\n\n_⏰ Timeout: ${settings.captcha_time} seconds_`;
         
         try {
             let sentMessage;
             
-            // Send with image if configured
             if (settings.welcome_image) {
                 sentMessage = await ctx.replyWithPhoto(settings.welcome_image, {
                     caption: captchaMessage,
                     parse_mode: 'Markdown',
-                    reply_markup: {
-                        force_reply: true
-                    }
+                    reply_markup: replyMarkup
                 });
             } else {
                 sentMessage = await ctx.reply(captchaMessage, {
                     parse_mode: 'Markdown',
-                    reply_markup: {
-                        force_reply: true
-                    }
+                    reply_markup: replyMarkup
                 });
             }
             

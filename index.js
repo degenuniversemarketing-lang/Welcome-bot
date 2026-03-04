@@ -238,7 +238,7 @@ Select an option to configure:
         ],
         [
             Markup.button.callback('🖼️ Welcome Image', `edit_welcome_image_${groupId}`),
-            Markup.button.callback('🔘 Buttons', `edit_buttons_${groupId}`)
+            Markup.button.callback('🔘 Welcome Buttons', `edit_buttons_${groupId}`)
         ],
         [
             Markup.button.callback('🎯 Toggle Captcha', `toggle_captcha_${groupId}`),
@@ -249,12 +249,12 @@ Select an option to configure:
             Markup.button.callback('⚖️ Punishment', `edit_punishment_${groupId}`)
         ],
         [
-            Markup.button.callback('🗑️ Join Message', `toggle_join_${groupId}`),
-            Markup.button.callback('👥 Admins', `manage_admins_${groupId}`)
+            Markup.button.callback('🗑️ Delete Join', `toggle_join_${groupId}`),
+            Markup.button.callback('👥 Manage Admins', `manage_admins_${groupId}`)
         ],
         [
-            Markup.button.callback('📊 Stats', `group_stats_${groupId}`),
-            Markup.button.callback('❌ Close', `close_panel_${groupId}`)
+            Markup.button.callback('📊 Group Stats', `group_stats_${groupId}`),
+            Markup.button.callback('❌ Close Panel', `close_panel_${groupId}`)
         ]
     ]);
     
@@ -369,10 +369,10 @@ bot.start(async (ctx) => {
     }
 });
 
-// ============ INLINE BUTTON HANDLERS ============
+// ============ INLINE BUTTON HANDLERS - ALL FIXED ============
 
-// Edit Welcome Text
-bot.action(/edit_welcome_(.+)/, async (ctx) => {
+// 📝 Edit Welcome Text
+bot.action(/edit_welcome_([0-9-]+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
     if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
@@ -394,8 +394,8 @@ bot.action(/edit_welcome_(.+)/, async (ctx) => {
     await ctx.answerCbQuery();
 });
 
-// Edit Captcha Image
-bot.action(/edit_captcha_image_(.+)/, async (ctx) => {
+// 🖼️ Edit Captcha Image
+bot.action(/edit_captcha_image_([0-9-]+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
     if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
@@ -416,8 +416,8 @@ bot.action(/edit_captcha_image_(.+)/, async (ctx) => {
     await ctx.answerCbQuery();
 });
 
-// Edit Welcome Image
-bot.action(/edit_welcome_image_(.+)/, async (ctx) => {
+// 🖼️ Edit Welcome Image
+bot.action(/edit_welcome_image_([0-9-]+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
     if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
@@ -437,29 +437,43 @@ bot.action(/edit_welcome_image_(.+)/, async (ctx) => {
     await ctx.answerCbQuery();
 });
 
-// Edit Welcome Buttons
-bot.action(/edit_buttons_(.+)/, async (ctx) => {
+// 🔘 Edit Welcome Buttons (shows submenu)
+bot.action(/edit_buttons_([0-9-]+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
     if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
         return ctx.answerCbQuery('❌ You are not an admin of this group');
     }
     
-    const keyboard = Markup.inlineKeyboard([
+    const settings = await db.getGroupSettings(groupId);
+    
+    const buttonsKeyboard = Markup.inlineKeyboard([
         [Markup.button.callback('➕ Add Button 1', `add_button1_${groupId}`)],
         [Markup.button.callback('➕ Add Button 2', `add_button2_${groupId}`)],
-        [Markup.button.callback('❌ Remove Buttons', `remove_buttons_${groupId}`)],
-        [Markup.button.callback('◀️ Back', `back_to_panel_${groupId}`)]
+        [Markup.button.callback('❌ Remove All Buttons', `remove_buttons_${groupId}`)],
+        [Markup.button.callback('◀️ Back to Main Panel', `back_to_panel_${groupId}`)]
     ]);
     
-    await ctx.editMessageText('🔘 **Configure Welcome Buttons**\n\nYou can add up to 2 buttons with custom text and URLs that appear in the welcome message after verification.', {
-        parse_mode: 'Markdown',
-        ...keyboard
-    });
+    let buttonStatus = '';
+    if (settings.welcome_buttons) {
+        buttonStatus = '✅ Buttons are enabled\n\n';
+        if (settings.button1_text) buttonStatus += `Button 1: ${settings.button1_text}\n`;
+        if (settings.button2_text) buttonStatus += `Button 2: ${settings.button2_text}\n`;
+    } else {
+        buttonStatus = '❌ Buttons are disabled\n';
+    }
+    
+    await ctx.editMessageText(
+        `🔘 **Welcome Buttons Configuration**\n\n` +
+        `${buttonStatus}\n` +
+        `You can add up to 2 buttons with custom text and URLs.\n\n` +
+        `Format: Button Text | https://example.com`,
+        { parse_mode: 'Markdown', ...buttonsKeyboard }
+    );
 });
 
-// Toggle Captcha
-bot.action(/toggle_captcha_(.+)/, async (ctx) => {
+// 🎯 Toggle Captcha
+bot.action(/toggle_captcha_([0-9-]+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
     if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
@@ -480,8 +494,8 @@ bot.action(/toggle_captcha_(.+)/, async (ctx) => {
     await showGroupAdminPanel(ctx, groupId);
 });
 
-// Edit Captcha Timeout
-bot.action(/edit_captcha_time_(.+)/, async (ctx) => {
+// ⏰ Edit Captcha Timeout
+bot.action(/edit_captcha_time_([0-9-]+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
     if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
@@ -502,8 +516,8 @@ bot.action(/edit_captcha_time_(.+)/, async (ctx) => {
     await ctx.answerCbQuery();
 });
 
-// Edit Welcome Delete Time
-bot.action(/edit_welcome_delete_(.+)/, async (ctx) => {
+// ⏰ Edit Welcome Delete Time
+bot.action(/edit_welcome_delete_([0-9-]+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
     if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
@@ -523,97 +537,31 @@ bot.action(/edit_welcome_delete_(.+)/, async (ctx) => {
     await ctx.answerCbQuery();
 });
 
-// Add Button 1
-bot.action(/add_button1_(.+)/, async (ctx) => {
+// ⚖️ Edit Punishment (shows punishment options)
+bot.action(/edit_punishment_([0-9-]+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
     if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
         return ctx.answerCbQuery('❌ You are not an admin of this group');
     }
     
-    await ctx.editMessageText(
-        `🔘 **Add Button 1**\n\n` +
-        `Send button text and URL for the welcome message in this format:\n` +
-        `Button Text | https://example.com\n\n` +
-        `Example: "Visit Website | https://google.com"`,
-        { parse_mode: 'Markdown' }
-    );
-    
-    const session = getSession(ctx.from.id.toString());
-    session.waitingForButton1 = groupId;
-    await ctx.answerCbQuery();
-});
-
-// Add Button 2
-bot.action(/add_button2_(.+)/, async (ctx) => {
-    const groupId = ctx.match[1];
-    
-    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
-        return ctx.answerCbQuery('❌ You are not an admin of this group');
-    }
-    
-    await ctx.editMessageText(
-        `🔘 **Add Button 2**\n\n` +
-        `Send button text and URL for the welcome message in this format:\n` +
-        `Button Text | https://example.com\n\n` +
-        `Example: "Join Channel | https://t.me/yourchannel"`,
-        { parse_mode: 'Markdown' }
-    );
-    
-    const session = getSession(ctx.from.id.toString());
-    session.waitingForButton2 = groupId;
-    await ctx.answerCbQuery();
-});
-
-// Remove Buttons
-bot.action(/remove_buttons_(.+)/, async (ctx) => {
-    const groupId = ctx.match[1];
-    
-    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
-        return ctx.answerCbQuery('❌ You are not an admin of this group');
-    }
-    
-    await db.updateGroupSettings(groupId, {
-        welcome_buttons: false,
-        button1_text: null,
-        button1_url: null,
-        button2_text: null,
-        button2_url: null
-    });
-    
-    await ctx.answerCbQuery('✅ Buttons removed');
-    
-    try {
-        await ctx.deleteMessage();
-    } catch (e) {}
-    
-    ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.callbackQuery.message.chat.title };
-    await showGroupAdminPanel(ctx, groupId);
-});
-
-// Punishment Selection
-bot.action(/edit_punishment_(.+)/, async (ctx) => {
-    const groupId = ctx.match[1];
-    
-    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
-        return ctx.answerCbQuery('❌ You are not an admin of this group');
-    }
-    
-    const keyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('👢 Kick', `set_punishment_${groupId}_kick`)],
-        [Markup.button.callback('🚫 Ban', `set_punishment_${groupId}_ban`)],
-        [Markup.button.callback('🔇 Mute', `set_punishment_${groupId}_mute`)],
-        [Markup.button.callback('⚠️ Remove Only', `set_punishment_${groupId}_remove`)],
-        [Markup.button.callback('◀️ Back', `back_to_panel_${groupId}`)]
+    const punishmentKeyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('👢 Kick User', `set_punishment_${groupId}_kick`)],
+        [Markup.button.callback('🚫 Ban User', `set_punishment_${groupId}_ban`)],
+        [Markup.button.callback('🔇 Mute User (1h)', `set_punishment_${groupId}_mute`)],
+        [Markup.button.callback('⚠️ Remove Only (No Punish)', `set_punishment_${groupId}_remove`)],
+        [Markup.button.callback('◀️ Back to Main Panel', `back_to_panel_${groupId}`)]
     ]);
     
-    await ctx.editMessageText('⚖️ **Select Punishment Action**\n\nChoose what happens when user fails captcha or times out:', {
-        parse_mode: 'Markdown',
-        ...keyboard
-    });
+    await ctx.editMessageText(
+        `⚖️ **Select Punishment Action**\n\n` +
+        `Choose what happens when a user fails the captcha or times out:`,
+        { parse_mode: 'Markdown', ...punishmentKeyboard }
+    );
 });
 
-bot.action(/set_punishment_(.+)_(.+)/, async (ctx) => {
+// Set Punishment Action
+bot.action(/set_punishment_([0-9-]+)_(kick|ban|mute|remove)/, async (ctx) => {
     const groupId = ctx.match[1];
     const punishment = ctx.match[2];
     
@@ -632,8 +580,8 @@ bot.action(/set_punishment_(.+)_(.+)/, async (ctx) => {
     await showGroupAdminPanel(ctx, groupId);
 });
 
-// Toggle Delete Join Message
-bot.action(/toggle_join_(.+)/, async (ctx) => {
+// 🗑️ Toggle Delete Join Message
+bot.action(/toggle_join_([0-9-]+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
     if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
@@ -654,8 +602,8 @@ bot.action(/toggle_join_(.+)/, async (ctx) => {
     await showGroupAdminPanel(ctx, groupId);
 });
 
-// Manage Admins
-bot.action(/manage_admins_(.+)/, async (ctx) => {
+// 👥 Manage Admins
+bot.action(/manage_admins_([0-9-]+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
     if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
@@ -664,25 +612,95 @@ bot.action(/manage_admins_(.+)/, async (ctx) => {
     
     const admins = await db.getGroupAdmins(groupId);
     
-    let message = `👥 **Group Admins**\n\n`;
+    let adminMessage = `👥 **Group Admins**\n\n`;
     if (admins.length === 0) {
-        message += `No admins found.\n`;
+        adminMessage += `No admins found.\n`;
     } else {
         admins.forEach((admin, index) => {
-            message += `${index + 1}. @${admin.admin_username || 'Unknown'} (${admin.admin_id})\n`;
+            adminMessage += `${index + 1}. @${admin.admin_username || 'Unknown'} (${admin.admin_id})\n`;
         });
     }
-    message += `\nTo add an admin, they just need to use /start in this group.`;
+    adminMessage += `\nTo add an admin, they just need to use /start in this group.`;
     
-    const keyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('◀️ Back', `back_to_panel_${groupId}`)]
+    const adminKeyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('◀️ Back to Main Panel', `back_to_panel_${groupId}`)]
     ]);
     
-    await ctx.editMessageText(message, { parse_mode: 'Markdown', ...keyboard });
+    await ctx.editMessageText(adminMessage, { parse_mode: 'Markdown', ...adminKeyboard });
 });
 
-// Group Stats
-bot.action(/group_stats_(.+)/, async (ctx) => {
+// ➕ Add Button 1
+bot.action(/add_button1_([0-9-]+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    await ctx.editMessageText(
+        `🔘 **Add Button 1**\n\n` +
+        `Send button text and URL in this format:\n` +
+        `Button Text | https://example.com\n\n` +
+        `Example: "Visit Website | https://google.com"\n\n` +
+        `Send /cancel to cancel.`,
+        { parse_mode: 'Markdown' }
+    );
+    
+    const session = getSession(ctx.from.id.toString());
+    session.waitingForButton1 = groupId;
+    await ctx.answerCbQuery();
+});
+
+// ➕ Add Button 2
+bot.action(/add_button2_([0-9-]+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    await ctx.editMessageText(
+        `🔘 **Add Button 2**\n\n` +
+        `Send button text and URL in this format:\n` +
+        `Button Text | https://example.com\n\n` +
+        `Example: "Join Channel | https://t.me/yourchannel"\n\n` +
+        `Send /cancel to cancel.`,
+        { parse_mode: 'Markdown' }
+    );
+    
+    const session = getSession(ctx.from.id.toString());
+    session.waitingForButton2 = groupId;
+    await ctx.answerCbQuery();
+});
+
+// ❌ Remove All Buttons
+bot.action(/remove_buttons_([0-9-]+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    await db.updateGroupSettings(groupId, {
+        welcome_buttons: false,
+        button1_text: null,
+        button1_url: null,
+        button2_text: null,
+        button2_url: null
+    });
+    
+    await ctx.answerCbQuery('✅ All buttons removed');
+    
+    try {
+        await ctx.deleteMessage();
+    } catch (e) {}
+    
+    ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.callbackQuery.message.chat.title };
+    await showGroupAdminPanel(ctx, groupId);
+});
+
+// 📊 Group Stats
+bot.action(/group_stats_([0-9-]+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
     if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
@@ -691,30 +709,32 @@ bot.action(/group_stats_(.+)/, async (ctx) => {
     
     const pendingCount = await db.getPendingCountForGroup ? 
         await db.getPendingCountForGroup(groupId) : 0;
+    const admins = await db.getGroupAdmins(groupId);
     
-    const message = `
+    const statsKeyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('◀️ Back to Main Panel', `back_to_panel_${groupId}`)]
+    ]);
+    
+    const statsMessage = `
 📊 **Group Statistics**
 Group: ${ctx.callbackQuery.message.chat.title}
 
 **Overview:**
-👥 Total Admins: ${(await db.getGroupAdmins(groupId)).length}
+👥 Total Admins: ${admins.length}
 ⏳ Pending Captchas: ${pendingCount}
+✅ Captcha Enabled: ${(await db.getGroupSettings(groupId)).captcha_enabled ? 'Yes' : 'No'}
     `;
     
-    const keyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('◀️ Back', `back_to_panel_${groupId}`)]
-    ]);
-    
-    await ctx.editMessageText(message, { parse_mode: 'Markdown', ...keyboard });
+    await ctx.editMessageText(statsMessage, { parse_mode: 'Markdown', ...statsKeyboard });
 });
 
-// Close Panel
-bot.action(/close_panel_(.+)/, async (ctx) => {
+// ❌ Close Panel
+bot.action(/close_panel_([0-9-]+)/, async (ctx) => {
     await ctx.deleteMessage();
 });
 
-// Back to Panel
-bot.action(/back_to_panel_(.+)/, async (ctx) => {
+// ◀️ Back to Main Panel
+bot.action(/back_to_panel_([0-9-]+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
     if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {

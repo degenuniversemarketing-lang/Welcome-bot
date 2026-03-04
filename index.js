@@ -12,7 +12,7 @@ const SUPER_ADMIN_ID = process.env.BOT_ADMIN_ID;
 // Simple in-memory session store
 const sessions = new Map();
 
-// Track processed joins
+// Track processed joins (prevent duplicates)
 const processedJoins = new Set();
 
 // Initialize database and start bot
@@ -1041,12 +1041,63 @@ bot.on('text', async (ctx) => {
     }
 });
 
-// ============ NEW MEMBER HANDLER - FOR SMALL GROUPS (<10K MEMBERS) ============
+// ============ UNIVERSAL JOIN HANDLER - WORKS FOR ALL GROUP SIZES ============
+// This handles joins via chat_member updates (works for ALL groups, including 10k+)
+bot.on('chat_member', async (ctx) => {
+    try {
+        const oldStatus = ctx.chatMember.old_chat_member?.status;
+        const newStatus = ctx.chatMember.new_chat_member.status;
+        const user = ctx.chatMember.new_chat_member.user;
+        const groupId = ctx.chat.id.toString();
+        const userId = user.id.toString();
+        
+        // Check if this is a new join (user became member/administrator from a non-member state)
+        const isNewJoin = (oldStatus === 'left' || oldStatus === 'kicked' || !oldStatus) && 
+                          (newStatus === 'member' || newStatus === 'administrator' || newStatus === 'creator');
+        
+        if (!isNewJoin) return;
+        
+        // Skip bots
+        if (user.is_bot) return;
+        
+        console.log(`👤 User joined (chat_member): ${user.first_name} (${userId}) in ${ctx.chat.title}`);
+        
+        // Check if group is allowed
+        const allowed = await db.isGroupAllowed(groupId);
+        if (!allowed) return;
+        
+        const settings = await db.getGroupSettings(groupId);
+        if (!settings) return;
+        
+        // Check if captcha is enabled
+        if (!settings.captcha_enabled) {
+            console.log(`Captcha disabled for group ${groupId}, skipping verification`);
+            return;
+        }
+        
+        // Prevent duplicate processing
+        const joinKey = `${groupId}:${userId}:chat_member`;
+        if (processedJoins.has(joinKey)) {
+            console.log(`Duplicate join detected for ${user.first_name}, skipping`);
+            return;
+        }
+        processedJoins.add(joinKey);
+        setTimeout(() => processedJoins.delete(joinKey), 30000);
+        
+        // Send captcha
+        await sendCaptcha(ctx, user, groupId, settings);
+        
+    } catch (error) {
+        console.error('Error in chat_member handler:', error);
+    }
+});
+
+// Keep new_chat_members handler for small groups (backward compatibility)
 bot.on(message('new_chat_members'), async (ctx) => {
     const newMembers = ctx.message.new_chat_members;
     const groupId = ctx.chat.id.toString();
     
-    console.log(`📢 new_chat_members event in ${ctx.chat.title} (Small group mode)`);
+    console.log(`📢 new_chat_members event in ${ctx.chat.title}`);
     
     const allowed = await db.isGroupAllowed(groupId);
     if (!allowed) return;
@@ -1080,53 +1131,16 @@ bot.on(message('new_chat_members'), async (ctx) => {
     }
 });
 
-// ============ CHAT MEMBER HANDLER - FOR LARGE GROUPS (>10K MEMBERS) ============
-bot.on('chat_member', async (ctx) => {
-    try {
-        // Only process when a new member joins (status becomes 'member')
-        const oldStatus = ctx.chatMember.old_chat_member?.status;
-        const newStatus = ctx.chatMember.new_chat_member.status;
-        
-        // Check if user joined (was left/restricted and now is member)
-        const joined = (oldStatus === 'left' || oldStatus === 'kicked' || oldStatus === 'restricted' || !oldStatus) 
-                      && newStatus === 'member';
-        
-        if (!joined) return;
-        
-        const userId = ctx.chatMember.new_chat_member.user.id.toString();
-        const groupId = ctx.chat.id.toString();
-        const user = ctx.chatMember.new_chat_member.user;
-        
-        console.log(`👤 User joined (via chat_member - Large group mode): ${user.first_name} (${userId}) in ${ctx.chat.title}`);
-        
-        // Check if this user was already processed recently (prevent duplicates)
-        const joinKey = `${groupId}:${userId}:chat_member`;
-        if (processedJoins.has(joinKey)) return;
-        processedJoins.add(joinKey);
-        setTimeout(() => processedJoins.delete(joinKey), 10000);
-        
-        const allowed = await db.isGroupAllowed(groupId);
-        if (!allowed) return;
-        
-        const settings = await db.getGroupSettings(groupId);
-        if (!settings) return;
-        
-        // Check if captcha is enabled
-        if (!settings.captcha_enabled) {
-            console.log(`Captcha disabled for group ${groupId}, skipping verification`);
-            return;
-        }
-        
-        await sendCaptcha(ctx, user, groupId, settings);
-        
-    } catch (error) {
-        console.error('Error in chat_member handler:', error);
-    }
-});
-
 // ============ SHARED CAPTCHA SENDING FUNCTION ============
 async function sendCaptcha(ctx, user, groupId, settings) {
     try {
+        // Check if user already has pending captcha
+        const existing = await db.getCaptchaInfo(user.id.toString(), groupId);
+        if (existing) {
+            console.log(`User ${user.first_name} already has pending captcha, skipping`);
+            return;
+        }
+        
         // Generate button captcha
         const captcha = generateButtonCaptcha();
         
@@ -1176,6 +1190,27 @@ bot.on('left_chat_member', async (ctx) => {
     const groupId = ctx.chat.id.toString();
     const userId = ctx.message.left_chat_member.id.toString();
     await db.deleteCaptcha(userId, groupId).catch(() => {});
+});
+
+// Also handle left via chat_member
+bot.on('chat_member', async (ctx) => {
+    try {
+        const oldStatus = ctx.chatMember.old_chat_member?.status;
+        const newStatus = ctx.chatMember.new_chat_member.status;
+        const user = ctx.chatMember.new_chat_member.user;
+        const groupId = ctx.chat.id.toString();
+        const userId = user.id.toString();
+        
+        // Check if user left or was kicked
+        const isLeft = (newStatus === 'left' || newStatus === 'kicked');
+        
+        if (isLeft) {
+            console.log(`👋 User left: ${user.first_name} (${userId}) from ${ctx.chat.title}`);
+            await db.deleteCaptcha(userId, groupId).catch(() => {});
+        }
+    } catch (error) {
+        console.error('Error in chat_member leave handler:', error);
+    }
 });
 
 // ============ ERROR HANDLER ============

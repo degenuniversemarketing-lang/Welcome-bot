@@ -1,7 +1,6 @@
 const { Telegraf, Markup } = require('telegraf');
 const { message } = require('telegraf/filters');
 const express = require('express');
-const { Pool } = require('pg');
 require('dotenv').config();
 
 const db = require('./db');
@@ -69,11 +68,9 @@ function getSession(userId) {
     return sessions.get(userId);
 }
 
-// ============ SIMPLE BUTTON CAPTCHA (GUARANTEED TO WORK) ============
+// ============ BUTTON CAPTCHA GENERATOR ============
 function generateButtonCaptcha() {
-    // Generate a random 4-digit code
     const code = Math.floor(1000 + Math.random() * 9000).toString();
-    
     return {
         question: `🔐 **Verification Required**\n\nPlease click the button below to verify you're human.`,
         answer: code,
@@ -97,7 +94,7 @@ async function applyPunishment(telegram, groupId, userId, action, reason = 'Fail
                 
             case 'kick':
                 await telegram.kickChatMember(groupId, parseInt(userId));
-                await telegram.unbanChatMember(groupId, parseInt(userId)); // Unban to allow rejoin
+                await telegram.unbanChatMember(groupId, parseInt(userId));
                 if (chatId) {
                     await telegram.sendMessage(chatId, `👢 User kicked for: ${reason}`);
                 }
@@ -105,7 +102,7 @@ async function applyPunishment(telegram, groupId, userId, action, reason = 'Fail
                 break;
                 
             case 'mute':
-                const untilDate = Math.floor(Date.now() / 1000) + 3600; // 1 hour mute
+                const untilDate = Math.floor(Date.now() / 1000) + 3600;
                 await telegram.restrictChatMember(groupId, parseInt(userId), {
                     permissions: {
                         can_send_messages: false,
@@ -126,7 +123,6 @@ async function applyPunishment(telegram, groupId, userId, action, reason = 'Fail
                 break;
                 
             case 'remove':
-                // Just remove from pending, no actual punishment
                 if (chatId) {
                     await telegram.sendMessage(chatId, `⚠️ User removed from verification for: ${reason}`);
                 }
@@ -148,17 +144,20 @@ async function cleanExpiredCaptchas() {
                 const settings = await db.getGroupSettings(captcha.group_id);
                 
                 if (settings && settings.punishment_action && settings.captcha_enabled) {
+                    // Delete captcha message first
+                    await bot.telegram.deleteMessage(captcha.group_id, captcha.message_id).catch(() => {});
+                    
+                    // Apply punishment
                     await applyPunishment(
                         bot.telegram,
                         captcha.group_id,
                         captcha.user_id,
                         settings.punishment_action,
                         'Captcha timeout',
-                        captcha.group_id // Send message to the group
+                        captcha.group_id
                     );
                 }
                 
-                await bot.telegram.deleteMessage(captcha.group_id, captcha.message_id).catch(() => {});
                 await db.deleteCaptcha(captcha.user_id, captcha.group_id);
                 
                 console.log(`⏰ Expired: ${captcha.first_name} (${captcha.user_id}) in ${captcha.group_id}`);
@@ -219,14 +218,14 @@ async function showGroupAdminPanel(ctx, groupId) {
 Group: ${ctx.chat.title}
 
 **Current Settings:**
-📝 Welcome: ${settings.welcome_text.substring(0, 30)}...
-🖼️ Image: ${settings.welcome_image ? '✅' : '❌'}
+📝 Welcome Text: ${settings.welcome_text.substring(0, 30)}...
+🖼️ Captcha Image: ${settings.captcha_image ? '✅' : '❌'}
+🖼️ Welcome Image: ${settings.welcome_image ? '✅' : '❌'}
 🔘 Buttons: ${settings.welcome_buttons ? '✅' : '❌'}
 🎯 Captcha: ${settings.captcha_enabled ? '✅ Enabled' : '❌ Disabled'}
-⏰ Timeout: ${settings.captcha_time}s
-✅ Verify Delete: ${settings.verify_delete_time || 5}s
+⏰ Captcha Timeout: ${settings.captcha_time}s
+⏰ Welcome Delete: ${settings.welcome_delete_time || 10}s
 ⚖️ Punishment: ${punishmentEmoji[settings.punishment_action]} ${settings.punishment_action}
-🔄 Max Attempts: ${settings.max_attempts}
 🗑️ Delete Join: ${settings.delete_join_message ? '✅' : '❌'}
 
 Select an option to configure:
@@ -235,19 +234,19 @@ Select an option to configure:
     const keyboard = Markup.inlineKeyboard([
         [
             Markup.button.callback('📝 Welcome Text', `edit_welcome_${groupId}`),
-            Markup.button.callback('🖼️ Welcome Image', `edit_image_${groupId}`)
+            Markup.button.callback('🖼️ Captcha Image', `edit_captcha_image_${groupId}`)
         ],
         [
-            Markup.button.callback('🔘 Welcome Buttons', `edit_buttons_${groupId}`),
-            Markup.button.callback('🎯 Toggle Captcha', `toggle_captcha_${groupId}`)
+            Markup.button.callback('🖼️ Welcome Image', `edit_welcome_image_${groupId}`),
+            Markup.button.callback('🔘 Buttons', `edit_buttons_${groupId}`)
         ],
         [
-            Markup.button.callback('⏰ Timeout', `edit_time_${groupId}`),
-            Markup.button.callback('✅ Verify Delete', `edit_verify_delete_${groupId}`)
+            Markup.button.callback('🎯 Toggle Captcha', `toggle_captcha_${groupId}`),
+            Markup.button.callback('⏰ Captcha Timeout', `edit_captcha_time_${groupId}`)
         ],
         [
-            Markup.button.callback('⚖️ Punishment', `edit_punishment_${groupId}`),
-            Markup.button.callback('🔄 Max Attempts', `edit_attempts_${groupId}`)
+            Markup.button.callback('⏰ Welcome Delete', `edit_welcome_delete_${groupId}`),
+            Markup.button.callback('⚖️ Punishment', `edit_punishment_${groupId}`)
         ],
         [
             Markup.button.callback('🗑️ Join Message', `toggle_join_${groupId}`),
@@ -287,14 +286,14 @@ bot.command('add', async (ctx) => {
         
         if (added) {
             await db.addGroupAdmin(groupId, ctx.from.id.toString(), ctx.from.username);
-            ctx.reply(`✅ **Group Added Successfully!**\n\n📌 ${chat.title}\n🔗 ID: \`${groupId}\``, {
+            ctx.reply(`✅ **Group Added Successfully!**\n\n📌 ${chat.title}\n🔗 ID: \`${groupId}\`\n\nGroup admins can now configure the bot by sending /start in their group.`, {
                 parse_mode: 'Markdown'
             });
         } else {
             ctx.reply('❌ Group already exists in database.');
         }
     } catch (error) {
-        ctx.reply('❌ Failed to add group. Make sure bot is admin in the group.');
+        ctx.reply('❌ Failed to add group. Make sure:\n1. Group ID is correct\n2. Bot is admin in the group');
     }
 });
 
@@ -345,7 +344,7 @@ bot.start(async (ctx) => {
         
         const allowed = await db.isGroupAllowed(groupId);
         if (!allowed) {
-            return ctx.reply('❌ This group is not configured. Contact super admin to add it first.');
+            return ctx.reply('❌ This group is not configured. Contact super admin to add it first.\n\nSuper admin needs to use: /add ' + groupId);
         }
         
         const isAdmin = await checkGroupAdmin(ctx, groupId, userId);
@@ -362,7 +361,9 @@ bot.start(async (ctx) => {
             `/remove -100GROUP_ID - Remove a group\n` +
             `/stats - View bot statistics\n\n` +
             `**Group Admin Commands:**\n` +
-            `Send /start in your group to configure settings`,
+            `1. Add bot to your group as admin\n` +
+            `2. Ask super admin to add your group using /add\n` +
+            `3. Send /start in your group to configure settings`,
             { parse_mode: 'Markdown' }
         );
     }
@@ -380,9 +381,9 @@ bot.action(/edit_welcome_(.+)/, async (ctx) => {
     
     await ctx.editMessageText(
         `📝 **Edit Welcome Text**\n\n` +
-        `Send the new welcome message.\n` +
+        `Send the new welcome message that appears AFTER verification.\n` +
         `Use {user} for member name and {group} for group name.\n\n` +
-        `Example: "Welcome {user} to {group}! Please verify:"\n\n` +
+        `Example: "Welcome {user} to {group}! We're glad to have you!"\n\n` +
         `_Current: ${(await db.getGroupSettings(groupId)).welcome_text}_\n\n` +
         `Send /cancel to cancel.`,
         { parse_mode: 'Markdown' }
@@ -393,8 +394,8 @@ bot.action(/edit_welcome_(.+)/, async (ctx) => {
     await ctx.answerCbQuery();
 });
 
-// Edit Welcome Image
-bot.action(/edit_image_(.+)/, async (ctx) => {
+// Edit Captcha Image
+bot.action(/edit_captcha_image_(.+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
     if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
@@ -402,15 +403,37 @@ bot.action(/edit_image_(.+)/, async (ctx) => {
     }
     
     await ctx.editMessageText(
-        `🖼️ **Edit Welcome Image**\n\n` +
-        `Send a photo or image URL to show with welcome message.\n\n` +
+        `🖼️ **Set Captcha Image**\n\n` +
+        `Send an image URL to show with the CAPTCHA message.\n` +
+        `This image will appear above the verification button.\n\n` +
+        `_Current: ${(await db.getGroupSettings(groupId)).captcha_image || 'No image'}_\n\n` +
+        `Send /cancel to cancel.`,
+        { parse_mode: 'Markdown' }
+    );
+    
+    const session = getSession(ctx.from.id.toString());
+    session.waitingForCaptchaImage = groupId;
+    await ctx.answerCbQuery();
+});
+
+// Edit Welcome Image
+bot.action(/edit_welcome_image_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    await ctx.editMessageText(
+        `🖼️ **Set Welcome Image**\n\n` +
+        `Send an image URL to show with the welcome message AFTER verification.\n\n` +
         `_Current: ${(await db.getGroupSettings(groupId)).welcome_image || 'No image'}_\n\n` +
         `Send /cancel to cancel.`,
         { parse_mode: 'Markdown' }
     );
     
     const session = getSession(ctx.from.id.toString());
-    session.waitingForImage = groupId;
+    session.waitingForWelcomeImage = groupId;
     await ctx.answerCbQuery();
 });
 
@@ -429,7 +452,7 @@ bot.action(/edit_buttons_(.+)/, async (ctx) => {
         [Markup.button.callback('◀️ Back', `back_to_panel_${groupId}`)]
     ]);
     
-    await ctx.editMessageText('🔘 **Configure Welcome Buttons**\n\nYou can add up to 2 buttons with custom text and URLs.', {
+    await ctx.editMessageText('🔘 **Configure Welcome Buttons**\n\nYou can add up to 2 buttons with custom text and URLs that appear in the welcome message after verification.', {
         parse_mode: 'Markdown',
         ...keyboard
     });
@@ -457,8 +480,8 @@ bot.action(/toggle_captcha_(.+)/, async (ctx) => {
     await showGroupAdminPanel(ctx, groupId);
 });
 
-// Edit Verify Delete Time
-bot.action(/edit_verify_delete_(.+)/, async (ctx) => {
+// Edit Captcha Timeout
+bot.action(/edit_captcha_time_(.+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
     if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
@@ -466,15 +489,37 @@ bot.action(/edit_verify_delete_(.+)/, async (ctx) => {
     }
     
     await ctx.editMessageText(
-        `✅ **Set Verification Message Delete Time**\n\n` +
-        `Send the time in seconds after which the welcome message will be deleted (5-60).\n` +
-        `_Current: ${(await db.getGroupSettings(groupId)).verify_delete_time || 5} seconds_\n\n` +
+        `⏰ **Set Captcha Timeout**\n\n` +
+        `Send the time in seconds before CAPTCHA expires (30-600).\n` +
+        `After this time, user will be punished and CAPTCHA message deleted.\n\n` +
+        `_Current: ${(await db.getGroupSettings(groupId)).captcha_time} seconds_\n\n` +
         `Send /cancel to cancel.`,
         { parse_mode: 'Markdown' }
     );
     
     const session = getSession(ctx.from.id.toString());
-    session.waitingForVerifyDelete = groupId;
+    session.waitingForCaptchaTime = groupId;
+    await ctx.answerCbQuery();
+});
+
+// Edit Welcome Delete Time
+bot.action(/edit_welcome_delete_(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    
+    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+        return ctx.answerCbQuery('❌ You are not an admin of this group');
+    }
+    
+    await ctx.editMessageText(
+        `⏰ **Set Welcome Message Delete Time**\n\n` +
+        `Send the time in seconds after which the welcome message will be deleted (5-60).\n` +
+        `_Current: ${(await db.getGroupSettings(groupId)).welcome_delete_time || 10} seconds_\n\n` +
+        `Send /cancel to cancel.`,
+        { parse_mode: 'Markdown' }
+    );
+    
+    const session = getSession(ctx.from.id.toString());
+    session.waitingForWelcomeDelete = groupId;
     await ctx.answerCbQuery();
 });
 
@@ -488,7 +533,7 @@ bot.action(/add_button1_(.+)/, async (ctx) => {
     
     await ctx.editMessageText(
         `🔘 **Add Button 1**\n\n` +
-        `Send button text and URL in this format:\n` +
+        `Send button text and URL for the welcome message in this format:\n` +
         `Button Text | https://example.com\n\n` +
         `Example: "Visit Website | https://google.com"`,
         { parse_mode: 'Markdown' }
@@ -509,7 +554,7 @@ bot.action(/add_button2_(.+)/, async (ctx) => {
     
     await ctx.editMessageText(
         `🔘 **Add Button 2**\n\n` +
-        `Send button text and URL in this format:\n` +
+        `Send button text and URL for the welcome message in this format:\n` +
         `Button Text | https://example.com\n\n` +
         `Example: "Join Channel | https://t.me/yourchannel"`,
         { parse_mode: 'Markdown' }
@@ -546,27 +591,6 @@ bot.action(/remove_buttons_(.+)/, async (ctx) => {
     await showGroupAdminPanel(ctx, groupId);
 });
 
-// Timeout Setting
-bot.action(/edit_time_(.+)/, async (ctx) => {
-    const groupId = ctx.match[1];
-    
-    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
-        return ctx.answerCbQuery('❌ You are not an admin of this group');
-    }
-    
-    await ctx.editMessageText(
-        `⏰ **Set Captcha Timeout**\n\n` +
-        `Send the timeout in seconds (30-600).\n` +
-        `_Current: ${(await db.getGroupSettings(groupId)).captcha_time} seconds_\n\n` +
-        `Send /cancel to cancel.`,
-        { parse_mode: 'Markdown' }
-    );
-    
-    const session = getSession(ctx.from.id.toString());
-    session.waitingForTimeout = groupId;
-    await ctx.answerCbQuery();
-});
-
 // Punishment Selection
 bot.action(/edit_punishment_(.+)/, async (ctx) => {
     const groupId = ctx.match[1];
@@ -583,7 +607,7 @@ bot.action(/edit_punishment_(.+)/, async (ctx) => {
         [Markup.button.callback('◀️ Back', `back_to_panel_${groupId}`)]
     ]);
     
-    await ctx.editMessageText('⚖️ **Select Punishment Action**\n\nChoose what happens when user fails captcha:', {
+    await ctx.editMessageText('⚖️ **Select Punishment Action**\n\nChoose what happens when user fails captcha or times out:', {
         parse_mode: 'Markdown',
         ...keyboard
     });
@@ -606,27 +630,6 @@ bot.action(/set_punishment_(.+)_(.+)/, async (ctx) => {
     
     ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.callbackQuery.message.chat.title };
     await showGroupAdminPanel(ctx, groupId);
-});
-
-// Max Attempts Setting
-bot.action(/edit_attempts_(.+)/, async (ctx) => {
-    const groupId = ctx.match[1];
-    
-    if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
-        return ctx.answerCbQuery('❌ You are not an admin of this group');
-    }
-    
-    await ctx.editMessageText(
-        `🔄 **Set Maximum Attempts**\n\n` +
-        `Send the number of allowed attempts (1-5).\n` +
-        `_Current: ${(await db.getGroupSettings(groupId)).max_attempts}_\n\n` +
-        `Send /cancel to cancel.`,
-        { parse_mode: 'Markdown' }
-    );
-    
-    const session = getSession(ctx.from.id.toString());
-    session.waitingForAttempts = groupId;
-    await ctx.answerCbQuery();
 });
 
 // Toggle Delete Join Message
@@ -735,7 +738,6 @@ bot.action(/verify_(\d+)/, async (ctx) => {
         
         console.log(`🔘 Button clicked by ${ctx.from.first_name} with code: ${verificationCode}`);
         
-        // Get captcha info for this user
         const captchaInfo = await db.getCaptchaInfo(userId, groupId);
         
         if (!captchaInfo) {
@@ -743,11 +745,9 @@ bot.action(/verify_(\d+)/, async (ctx) => {
             return;
         }
         
-        // Get settings for verify delete time
         const settings = await db.getGroupSettings(groupId);
-        const deleteTime = settings.verify_delete_time || 5; // Default 5 seconds
+        const welcomeDeleteTime = settings.welcome_delete_time || 10;
         
-        // Check if the code matches
         if (captchaInfo.correct_answer === verificationCode) {
             // ✅ Correct verification
             await ctx.answerCbQuery('✅ Verified! Welcome to the group!');
@@ -755,8 +755,40 @@ bot.action(/verify_(\d+)/, async (ctx) => {
             // Delete the captcha message
             await ctx.deleteMessage(captchaInfo.message_id).catch(e => {});
             
-            // Send welcome message that will auto-delete
-            const welcomeMsg = await ctx.reply(`✅ **Verified!** Welcome to the group, ${ctx.from.first_name}! 🎉`);
+            // Prepare welcome message
+            let welcomeText = settings.welcome_text || "Welcome {user} to {group}!";
+            welcomeText = welcomeText.replace(/{user}/g, ctx.from.first_name);
+            welcomeText = welcomeText.replace(/{group}/g, ctx.chat.title);
+            
+            // Prepare welcome buttons if enabled
+            let replyMarkup = {};
+            if (settings.welcome_buttons) {
+                const buttons = [];
+                if (settings.button1_text && settings.button1_url) {
+                    buttons.push([Markup.button.url(settings.button1_text, settings.button1_url)]);
+                }
+                if (settings.button2_text && settings.button2_url) {
+                    buttons.push([Markup.button.url(settings.button2_text, settings.button2_url)]);
+                }
+                if (buttons.length > 0) {
+                    replyMarkup = { inline_keyboard: buttons };
+                }
+            }
+            
+            // Send welcome message with optional image
+            let welcomeMsg;
+            if (settings.welcome_image) {
+                welcomeMsg = await ctx.replyWithPhoto(settings.welcome_image, {
+                    caption: welcomeText,
+                    parse_mode: 'Markdown',
+                    reply_markup: replyMarkup
+                });
+            } else {
+                welcomeMsg = await ctx.reply(welcomeText, {
+                    parse_mode: 'Markdown',
+                    reply_markup: replyMarkup
+                });
+            }
             
             // Remove from database
             await db.deleteCaptcha(userId, groupId);
@@ -771,7 +803,7 @@ bot.action(/verify_(\d+)/, async (ctx) => {
                 } catch (e) {
                     console.log('Could not auto-delete message:', e.message);
                 }
-            }, deleteTime * 1000);
+            }, welcomeDeleteTime * 1000);
             
         } else {
             await ctx.answerCbQuery('❌ Invalid verification!');
@@ -810,24 +842,52 @@ bot.on('text', async (ctx) => {
         return;
     }
     
-    // Handle waiting for image
-    if (session.waitingForImage) {
-        const groupId = session.waitingForImage;
+    // Handle waiting for captcha image
+    if (session.waitingForCaptchaImage) {
+        const groupId = session.waitingForCaptchaImage;
         
         if (ctx.message.text === '/cancel') {
-            delete session.waitingForImage;
+            delete session.waitingForCaptchaImage;
             return ctx.reply('❌ Cancelled.');
         }
         
         if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
-            delete session.waitingForImage;
+            delete session.waitingForCaptchaImage;
+            return ctx.reply('❌ You are not an admin of this group');
+        }
+        
+        const url = ctx.message.text.trim();
+        if (url.startsWith('http://') || url.startsWith('https://')) {
+            await db.updateGroupSettings(groupId, { captcha_image: url });
+            delete session.waitingForCaptchaImage;
+            await ctx.reply('✅ Captcha image URL saved!');
+        } else {
+            return ctx.reply('❌ Please send a valid URL starting with http:// or https://');
+        }
+        
+        ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
+        await showGroupAdminPanel(ctx, groupId);
+        return;
+    }
+    
+    // Handle waiting for welcome image
+    if (session.waitingForWelcomeImage) {
+        const groupId = session.waitingForWelcomeImage;
+        
+        if (ctx.message.text === '/cancel') {
+            delete session.waitingForWelcomeImage;
+            return ctx.reply('❌ Cancelled.');
+        }
+        
+        if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
+            delete session.waitingForWelcomeImage;
             return ctx.reply('❌ You are not an admin of this group');
         }
         
         const url = ctx.message.text.trim();
         if (url.startsWith('http://') || url.startsWith('https://')) {
             await db.updateGroupSettings(groupId, { welcome_image: url });
-            delete session.waitingForImage;
+            delete session.waitingForWelcomeImage;
             await ctx.reply('✅ Welcome image URL saved!');
         } else {
             return ctx.reply('❌ Please send a valid URL starting with http:// or https://');
@@ -902,17 +962,17 @@ bot.on('text', async (ctx) => {
         return;
     }
     
-    // Handle waiting for timeout
-    if (session.waitingForTimeout) {
-        const groupId = session.waitingForTimeout;
+    // Handle waiting for captcha time
+    if (session.waitingForCaptchaTime) {
+        const groupId = session.waitingForCaptchaTime;
         
         if (ctx.message.text === '/cancel') {
-            delete session.waitingForTimeout;
+            delete session.waitingForCaptchaTime;
             return ctx.reply('❌ Cancelled.');
         }
         
         if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
-            delete session.waitingForTimeout;
+            delete session.waitingForCaptchaTime;
             return ctx.reply('❌ You are not an admin of this group');
         }
         
@@ -922,26 +982,26 @@ bot.on('text', async (ctx) => {
         }
         
         await db.updateGroupSettings(groupId, { captcha_time: timeout });
-        delete session.waitingForTimeout;
+        delete session.waitingForCaptchaTime;
         
-        await ctx.reply(`✅ Timeout set to ${timeout} seconds!`);
+        await ctx.reply(`✅ Captcha timeout set to ${timeout} seconds!`);
         
         ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
         await showGroupAdminPanel(ctx, groupId);
         return;
     }
     
-    // Handle waiting for verify delete time
-    if (session.waitingForVerifyDelete) {
-        const groupId = session.waitingForVerifyDelete;
+    // Handle waiting for welcome delete time
+    if (session.waitingForWelcomeDelete) {
+        const groupId = session.waitingForWelcomeDelete;
         
         if (ctx.message.text === '/cancel') {
-            delete session.waitingForVerifyDelete;
+            delete session.waitingForWelcomeDelete;
             return ctx.reply('❌ Cancelled.');
         }
         
         if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
-            delete session.waitingForVerifyDelete;
+            delete session.waitingForWelcomeDelete;
             return ctx.reply('❌ You are not an admin of this group');
         }
         
@@ -950,39 +1010,10 @@ bot.on('text', async (ctx) => {
             return ctx.reply('❌ Please send a number between 5 and 60.');
         }
         
-        await db.updateGroupSettings(groupId, { verify_delete_time: deleteTime });
-        delete session.waitingForVerifyDelete;
+        await db.updateGroupSettings(groupId, { welcome_delete_time: deleteTime });
+        delete session.waitingForWelcomeDelete;
         
-        await ctx.reply(`✅ Verification message will now delete after ${deleteTime} seconds!`);
-        
-        ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
-        await showGroupAdminPanel(ctx, groupId);
-        return;
-    }
-    
-    // Handle waiting for max attempts
-    if (session.waitingForAttempts) {
-        const groupId = session.waitingForAttempts;
-        
-        if (ctx.message.text === '/cancel') {
-            delete session.waitingForAttempts;
-            return ctx.reply('❌ Cancelled.');
-        }
-        
-        if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
-            delete session.waitingForAttempts;
-            return ctx.reply('❌ You are not an admin of this group');
-        }
-        
-        const attempts = parseInt(ctx.message.text);
-        if (isNaN(attempts) || attempts < 1 || attempts > 5) {
-            return ctx.reply('❌ Please send a number between 1 and 5.');
-        }
-        
-        await db.updateGroupSettings(groupId, { max_attempts: attempts });
-        delete session.waitingForAttempts;
-        
-        await ctx.reply(`✅ Max attempts set to ${attempts}!`);
+        await ctx.reply(`✅ Welcome message will now delete after ${deleteTime} seconds!`);
         
         ctx.chat = { id: parseInt(groupId), type: 'supergroup', title: ctx.chat.title };
         await showGroupAdminPanel(ctx, groupId);
@@ -1026,26 +1057,24 @@ bot.on(message('new_chat_members'), async (ctx) => {
         // Generate button captcha
         const captcha = generateButtonCaptcha();
         
-        let welcomeText = settings.welcome_text;
-        welcomeText = welcomeText.replace(/{user}/g, member.first_name);
-        welcomeText = welcomeText.replace(/{group}/g, ctx.chat.title);
+        // Prepare captcha message
+        const captchaText = `Please verify you're human, ${member.first_name}.\n\n${captcha.question}\n\n_⏰ Timeout: ${settings.captcha_time} seconds_`;
         
         // Create inline keyboard with verify button
         const keyboard = Markup.inlineKeyboard([captcha.buttons]);
         
-        const captchaMessage = `${welcomeText}\n\n${captcha.question}\n\n_⏰ Timeout: ${settings.captcha_time} seconds_`;
-        
         try {
             let sentMessage;
             
-            if (settings.welcome_image) {
-                sentMessage = await ctx.replyWithPhoto(settings.welcome_image, {
-                    caption: captchaMessage,
+            // Send captcha with optional image
+            if (settings.captcha_image) {
+                sentMessage = await ctx.replyWithPhoto(settings.captcha_image, {
+                    caption: captchaText,
                     parse_mode: 'Markdown',
                     reply_markup: keyboard.reply_markup
                 });
             } else {
-                sentMessage = await ctx.reply(captchaMessage, {
+                sentMessage = await ctx.reply(captchaText, {
                     parse_mode: 'Markdown',
                     reply_markup: keyboard.reply_markup
                 });

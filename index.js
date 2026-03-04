@@ -4,7 +4,6 @@ const express = require('express');
 require('dotenv').config();
 
 const db = require('./db');
-const { pool } = db;
 
 // Initialize bot
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -1082,14 +1081,31 @@ bot.on('text', async (ctx) => {
         return;
     }
     
-    console.log(`Captcha answer received from ${ctx.from.first_name}: ${answer}`);
-    console.log(`Expected answer: ${captchaInfo.correct_answer}`);
+    console.log(`Captcha answer received from ${ctx.from.first_name}: "${answer}"`);
+    console.log(`Expected answer: "${captchaInfo.correct_answer}"`);
     
     // Get group settings
     const settings = await db.getGroupSettings(groupId);
     
-    // Verify the captcha (compare as strings to handle both number and text)
-    const isCorrect = answer.toString().trim() === captchaInfo.correct_answer.toString().trim();
+    // FIXED: Convert both to strings and trim for comparison
+    const userAnswer = answer.toString().trim();
+    const correctAnswer = captchaInfo.correct_answer.toString().trim();
+    
+    // Also try parsing as numbers for math captcha
+    let isCorrect = false;
+    
+    // Check exact string match first
+    if (userAnswer === correctAnswer) {
+        isCorrect = true;
+    } 
+    // If not, try as numbers (for math captcha where user might send "7" but answer is stored as "7")
+    else if (!isNaN(parseInt(userAnswer)) && !isNaN(parseInt(correctAnswer))) {
+        if (parseInt(userAnswer) === parseInt(correctAnswer)) {
+            isCorrect = true;
+        }
+    }
+    
+    console.log(`Answer comparison result: ${isCorrect ? '✅ CORRECT' : '❌ WRONG'}`);
     
     if (isCorrect) {
         // CORRECT ANSWER - No punishment, just verify
@@ -1121,7 +1137,7 @@ bot.on('text', async (ctx) => {
             console.log(`Wrong answer from ${ctx.from.first_name}. Attempt ${newAttempts}/${maxAttempts}`);
             
             // Update attempt count in database
-            await pool.query(
+            await db.pool.query(
                 'UPDATE pending_captcha SET attempt_count = $1 WHERE user_id = $2 AND group_id = $3',
                 [newAttempts, userId, groupId]
             );

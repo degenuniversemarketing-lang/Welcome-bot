@@ -1021,10 +1021,12 @@ bot.on('text', async (ctx) => {
     }
 });
 
-// ============ NEW MEMBER HANDLER ============
+// ============ NEW MEMBER HANDLER - FOR SMALL GROUPS (<10K MEMBERS) ============
 bot.on(message('new_chat_members'), async (ctx) => {
     const newMembers = ctx.message.new_chat_members;
     const groupId = ctx.chat.id.toString();
+    
+    console.log(`📢 new_chat_members event in ${ctx.chat.title} (Small group mode)`);
     
     const allowed = await db.isGroupAllowed(groupId);
     if (!allowed) return;
@@ -1054,51 +1056,100 @@ bot.on(message('new_chat_members'), async (ctx) => {
         processedJoins.add(joinKey);
         setTimeout(() => processedJoins.delete(joinKey), 60000);
         
+        await sendCaptcha(ctx, member, groupId, settings);
+    }
+});
+
+// ============ CHAT MEMBER HANDLER - FOR LARGE GROUPS (>10K MEMBERS) ============
+bot.on('chat_member', async (ctx) => {
+    try {
+        // Only process when a new member joins (status becomes 'member')
+        const oldStatus = ctx.chatMember.old_chat_member?.status;
+        const newStatus = ctx.chatMember.new_chat_member.status;
+        
+        // Check if user joined (was left/restricted and now is member)
+        const joined = (oldStatus === 'left' || oldStatus === 'kicked' || oldStatus === 'restricted' || !oldStatus) 
+                      && newStatus === 'member';
+        
+        if (!joined) return;
+        
+        const userId = ctx.chatMember.new_chat_member.user.id.toString();
+        const groupId = ctx.chat.id.toString();
+        const user = ctx.chatMember.new_chat_member.user;
+        
+        console.log(`👤 User joined (via chat_member - Large group mode): ${user.first_name} (${userId}) in ${ctx.chat.title}`);
+        
+        // Check if this user was already processed recently (prevent duplicates)
+        const joinKey = `${groupId}:${userId}:chat_member`;
+        if (processedJoins.has(joinKey)) return;
+        processedJoins.add(joinKey);
+        setTimeout(() => processedJoins.delete(joinKey), 10000);
+        
+        const allowed = await db.isGroupAllowed(groupId);
+        if (!allowed) return;
+        
+        const settings = await db.getGroupSettings(groupId);
+        if (!settings) return;
+        
+        // Check if captcha is enabled
+        if (!settings.captcha_enabled) {
+            console.log(`Captcha disabled for group ${groupId}, skipping verification`);
+            return;
+        }
+        
+        await sendCaptcha(ctx, user, groupId, settings);
+        
+    } catch (error) {
+        console.error('Error in chat_member handler:', error);
+    }
+});
+
+// ============ SHARED CAPTCHA SENDING FUNCTION ============
+async function sendCaptcha(ctx, user, groupId, settings) {
+    try {
         // Generate button captcha
         const captcha = generateButtonCaptcha();
         
         // Prepare captcha message
-        const captchaText = `Please verify you're human, ${member.first_name}.\n\n${captcha.question}\n\n_⏰ Timeout: ${settings.captcha_time} seconds_`;
+        const captchaText = `Please verify you're human, ${user.first_name}.\n\n${captcha.question}\n\n_⏰ Timeout: ${settings.captcha_time} seconds_`;
         
         // Create inline keyboard with verify button
         const keyboard = Markup.inlineKeyboard([captcha.buttons]);
         
-        try {
-            let sentMessage;
-            
-            // Send captcha with optional image
-            if (settings.captcha_image) {
-                sentMessage = await ctx.replyWithPhoto(settings.captcha_image, {
-                    caption: captchaText,
-                    parse_mode: 'Markdown',
-                    reply_markup: keyboard.reply_markup
-                });
-            } else {
-                sentMessage = await ctx.reply(captchaText, {
-                    parse_mode: 'Markdown',
-                    reply_markup: keyboard.reply_markup
-                });
-            }
-            
-            const expireAt = new Date();
-            expireAt.setSeconds(expireAt.getSeconds() + settings.captcha_time);
-            
-            await db.saveCaptcha(
-                member.id.toString(),
-                groupId,
-                member.first_name,
-                member.username,
-                captcha.answer,
-                sentMessage.message_id,
-                expireAt
-            );
-            
-            console.log(`🆕 Button captcha sent to ${member.first_name} in ${ctx.chat.title} with code: ${captcha.answer}`);
-        } catch (error) {
-            console.error('Error sending captcha:', error);
+        let sentMessage;
+        
+        // Send captcha with optional image
+        if (settings.captcha_image) {
+            sentMessage = await ctx.replyWithPhoto(settings.captcha_image, {
+                caption: captchaText,
+                parse_mode: 'Markdown',
+                reply_markup: keyboard.reply_markup
+            });
+        } else {
+            sentMessage = await ctx.reply(captchaText, {
+                parse_mode: 'Markdown',
+                reply_markup: keyboard.reply_markup
+            });
         }
+        
+        const expireAt = new Date();
+        expireAt.setSeconds(expireAt.getSeconds() + settings.captcha_time);
+        
+        await db.saveCaptcha(
+            user.id.toString(),
+            groupId,
+            user.first_name,
+            user.username,
+            captcha.answer,
+            sentMessage.message_id,
+            expireAt
+        );
+        
+        console.log(`🆕 Button captcha sent to ${user.first_name} in ${ctx.chat.title} with code: ${captcha.answer}`);
+    } catch (error) {
+        console.error('Error sending captcha:', error);
     }
-});
+}
 
 // ============ LEFT MEMBER HANDLER ============
 bot.on('left_chat_member', async (ctx) => {

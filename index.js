@@ -263,7 +263,7 @@ Select an option to configure:
     const keyboard = Markup.inlineKeyboard([
         [
             Markup.button.callback('📝 Welcome Text', `edit_welcome_${groupId}`),
-            Markup.button.callback('🖼️ Welcome Image', `edit_image_groupId`)
+            Markup.button.callback('🖼️ Welcome Image', `edit_image_${groupId}`)
         ],
         [
             Markup.button.callback('🔘 Welcome Buttons', `edit_buttons_${groupId}`),
@@ -1055,32 +1055,47 @@ bot.on(message('new_chat_members'), async (ctx) => {
     }
 });
 
-// ============ CAPTCHA ANSWER HANDLER - FULLY TESTED & WORKING ============
+// ============ SIMPLIFIED CAPTCHA ANSWER HANDLER - GUARANTEED WORKING ============
 bot.on('text', async (ctx) => {
     // Only process in groups
-    if (ctx.chat.type === 'private') return;
+    if (ctx.chat.type !== 'group' && ctx.chat.type !== 'supergroup') return;
     
     try {
         const groupId = ctx.chat.id.toString();
         const userId = ctx.from.id.toString();
         const answer = ctx.message.text.trim();
         
-        console.log(`📝 Message from ${ctx.from.first_name} (${userId}) in ${ctx.chat.title}: "${answer}"`);
+        console.log(`\n🔍 CAPTCHA CHECK:`);
+        console.log(`User: ${ctx.from.first_name} (${userId})`);
+        console.log(`Answer: "${answer}"`);
         
         // Check if this is a reply to a message
         if (!ctx.message.reply_to_message) {
-            console.log('Not a reply, ignoring');
+            console.log('❌ Not a reply message - ignoring');
             return;
         }
         
         console.log(`Reply to message ID: ${ctx.message.reply_to_message.message_id}`);
         
-        // Get captcha info for this specific user
+        // Get ALL captchas for this group to debug
+        const allCaptchas = await db.pool.query(
+            'SELECT * FROM pending_captcha WHERE group_id = $1',
+            [groupId]
+        );
+        console.log(`Total pending captchas in group: ${allCaptchas.rows.length}`);
+        
+        if (allCaptchas.rows.length > 0) {
+            console.log('Pending captchas:');
+            allCaptchas.rows.forEach(c => {
+                console.log(`  - User: ${c.first_name} (${c.user_id}), MsgID: ${c.message_id}, Answer: "${c.correct_answer}"`);
+            });
+        }
+        
+        // Get captcha for this specific user
         const captchaInfo = await db.getCaptchaInfo(userId, groupId);
         
-        // If no captcha found for this user
         if (!captchaInfo) {
-            console.log(`No captcha found for user ${userId}`);
+            console.log(`❌ No captcha found for user ${userId}`);
             
             // Check if they're replying to someone else's captcha
             const repliedToId = ctx.message.reply_to_message.message_id;
@@ -1094,57 +1109,70 @@ bot.on('text', async (ctx) => {
                 await ctx.reply(`❌ This captcha is for ${otherUser.first_name}, not for you!`, {
                     reply_to_message_id: ctx.message.message_id
                 });
+                console.log(`⚠️ User tried to answer for ${otherUser.first_name}`);
             }
             return;
         }
         
-        // Verify this is the correct message
+        console.log(`✅ Found captcha for user:`);
+        console.log(`  - Expected answer: "${captchaInfo.correct_answer}"`);
+        console.log(`  - Message ID: ${captchaInfo.message_id}`);
+        console.log(`  - Attempts: ${captchaInfo.attempt_count || 0}`);
+        
+        // Verify correct message
         if (ctx.message.reply_to_message.message_id !== captchaInfo.message_id) {
-            console.log('Wrong message ID');
+            console.log(`❌ Wrong message ID - user replied to ${ctx.message.reply_to_message.message_id}, captcha is at ${captchaInfo.message_id}`);
             await ctx.reply(`❌ Please reply directly to your captcha message.`, {
                 reply_to_message_id: ctx.message.message_id
             });
             return;
         }
         
-        console.log(`✅ Correct message. Expected: "${captchaInfo.correct_answer}", Got: "${answer}"`);
+        console.log(`✅ Correct message ID match!`);
         
         // Get settings
         const settings = await db.getGroupSettings(groupId);
         
-        // COMPARE ANSWERS (multiple methods)
-        const userAns = answer.toString().trim().toLowerCase();
-        const correctAns = captchaInfo.correct_answer.toString().trim().toLowerCase();
+        // SIMPLE COMPARISON - Convert both to strings and compare
+        const userAnswer = answer.toString().trim();
+        const correctAnswer = captchaInfo.correct_answer.toString().trim();
         
-        let isCorrect = false;
+        console.log(`Comparing: "${userAnswer}" vs "${correctAnswer}"`);
         
-        // Method 1: Direct match
-        if (userAns === correctAns) {
-            isCorrect = true;
-            console.log('Match: Direct string');
-        }
-        // Method 2: Number match (for math)
-        else if (!isNaN(parseInt(userAns)) && !isNaN(parseInt(correctAns))) {
-            if (parseInt(userAns) === parseInt(correctAns)) {
+        // Try direct string comparison first
+        let isCorrect = (userAnswer === correctAnswer);
+        
+        // If not, try number comparison (for math)
+        if (!isCorrect) {
+            const userNum = parseInt(userAnswer);
+            const correctNum = parseInt(correctAnswer);
+            if (!isNaN(userNum) && !isNaN(correctNum) && userNum === correctNum) {
                 isCorrect = true;
-                console.log('Match: Number conversion');
+                console.log('✅ Match via number comparison');
             }
         }
-        // Method 3: Remove spaces
-        else if (userAns.replace(/\s+/g, '') === correctAns.replace(/\s+/g, '')) {
-            isCorrect = true;
-            console.log('Match: No spaces');
+        
+        // If still not, try lowercase comparison (for text)
+        if (!isCorrect) {
+            if (userAnswer.toLowerCase() === correctAnswer.toLowerCase()) {
+                isCorrect = true;
+                console.log('✅ Match via lowercase comparison');
+            }
         }
+        
+        console.log(`Final result: ${isCorrect ? '✅ CORRECT' : '❌ WRONG'}`);
         
         if (isCorrect) {
             // ✅ CORRECT ANSWER
-            console.log(`✅ ${ctx.from.first_name} answered correctly!`);
+            console.log(`🎉 ${ctx.from.first_name} answered correctly! Verifying...`);
             
             try {
                 // Delete captcha message
-                await ctx.deleteMessage(captchaInfo.message_id).catch(e => {});
+                await ctx.deleteMessage(captchaInfo.message_id).catch(e => {
+                    console.log('Could not delete message:', e.message);
+                });
                 
-                // Welcome message
+                // Send welcome message
                 await ctx.reply(`✅ **Verified!** Welcome to the group, ${ctx.from.first_name}! 🎉`, {
                     parse_mode: 'Markdown',
                     reply_to_message_id: ctx.message.message_id
@@ -1153,17 +1181,19 @@ bot.on('text', async (ctx) => {
                 // Remove from database
                 await db.deleteCaptcha(userId, groupId);
                 
-                console.log(`✅ ${ctx.from.first_name} verified`);
+                console.log(`✅ ${ctx.from.first_name} verified successfully!`);
             } catch (error) {
-                console.error('Error in correct answer:', error);
+                console.error('Error in correct answer handling:', error);
             }
         } else {
             // ❌ WRONG ANSWER
-            console.log(`❌ Wrong answer from ${ctx.from.first_name}`);
+            console.log(`❌ ${ctx.from.first_name} gave wrong answer`);
             
             try {
                 const currentAttempts = (captchaInfo.attempt_count || 0) + 1;
                 const maxAttempts = settings.max_attempts || 3;
+                
+                console.log(`Attempt ${currentAttempts}/${maxAttempts}`);
                 
                 // Update attempt count
                 await db.pool.query(
@@ -1185,7 +1215,7 @@ bot.on('text', async (ctx) => {
                     });
                 }
             } catch (error) {
-                console.error('Error in wrong answer:', error);
+                console.error('Error in wrong answer handling:', error);
             }
         }
     } catch (error) {

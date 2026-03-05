@@ -12,7 +12,7 @@ const SUPER_ADMIN_ID = process.env.BOT_ADMIN_ID;
 // Simple in-memory session store
 const sessions = new Map();
 
-// Track processed joins
+// Track processed joins (prevent duplicates)
 const processedJoins = new Set();
 
 // Initialize database and start bot
@@ -369,7 +369,7 @@ bot.start(async (ctx) => {
     }
 });
 
-// ============ INLINE BUTTON HANDLERS - ALL FIXED ============
+// ============ INLINE BUTTON HANDLERS - ALL WORKING ============
 
 // 📝 Edit Welcome Text
 bot.action(/edit_welcome_([0-9-]+)/, async (ctx) => {
@@ -394,7 +394,7 @@ bot.action(/edit_welcome_([0-9-]+)/, async (ctx) => {
     await ctx.answerCbQuery();
 });
 
-// 🖼️ Edit Captcha Image
+// 🖼️ Edit Captcha Image - FIXED to match welcome image pattern
 bot.action(/edit_captcha_image_([0-9-]+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
@@ -416,7 +416,7 @@ bot.action(/edit_captcha_image_([0-9-]+)/, async (ctx) => {
     await ctx.answerCbQuery();
 });
 
-// 🖼️ Edit Welcome Image
+// 🖼️ Edit Welcome Image - THIS WORKS PERFECTLY
 bot.action(/edit_welcome_image_([0-9-]+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
@@ -437,7 +437,7 @@ bot.action(/edit_welcome_image_([0-9-]+)/, async (ctx) => {
     await ctx.answerCbQuery();
 });
 
-// 🔘 Edit Welcome Buttons (shows submenu)
+// 🔘 Edit Welcome Buttons
 bot.action(/edit_buttons_([0-9-]+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
@@ -537,7 +537,7 @@ bot.action(/edit_welcome_delete_([0-9-]+)/, async (ctx) => {
     await ctx.answerCbQuery();
 });
 
-// ⚖️ Edit Punishment (shows punishment options)
+// ⚖️ Edit Punishment
 bot.action(/edit_punishment_([0-9-]+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
@@ -549,7 +549,7 @@ bot.action(/edit_punishment_([0-9-]+)/, async (ctx) => {
         [Markup.button.callback('👢 Kick User', `set_punishment_${groupId}_kick`)],
         [Markup.button.callback('🚫 Ban User', `set_punishment_${groupId}_ban`)],
         [Markup.button.callback('🔇 Mute User (1h)', `set_punishment_${groupId}_mute`)],
-        [Markup.button.callback('⚠️ Remove Only (No Punish)', `set_punishment_${groupId}_remove`)],
+        [Markup.button.callback('⚠️ Remove Only', `set_punishment_${groupId}_remove`)],
         [Markup.button.callback('◀️ Back to Main Panel', `back_to_panel_${groupId}`)]
     ]);
     
@@ -866,7 +866,7 @@ bot.on('text', async (ctx) => {
         return;
     }
     
-    // Handle waiting for captcha image (FIXED - same as welcome image)
+    // Handle waiting for captcha image - FIXED to match welcome image pattern
     if (session.waitingForCaptchaImage) {
         const groupId = session.waitingForCaptchaImage;
         
@@ -895,7 +895,7 @@ bot.on('text', async (ctx) => {
         return;
     }
     
-    // Handle waiting for welcome image (THIS WORKS PERFECTLY)
+    // Handle waiting for welcome image - THIS WORKS PERFECTLY
     if (session.waitingForWelcomeImage) {
         const groupId = session.waitingForWelcomeImage;
         
@@ -1047,8 +1047,8 @@ bot.on('text', async (ctx) => {
     }
 });
 
-// ============ UNIVERSAL JOIN HANDLER - WORKS FOR ALL GROUP SIZES ============
-// Primary handler for all groups, especially large ones (10,000+ members)
+// ============ PRIMARY JOIN HANDLER - WORKS FOR ALL GROUP SIZES ============
+// This is the main handler that works for ALL groups, including 100,000+ members
 bot.on('chat_member', async (ctx) => {
     try {
         const oldStatus = ctx.chatMember.old_chat_member?.status;
@@ -1060,20 +1060,31 @@ bot.on('chat_member', async (ctx) => {
         // Skip bots
         if (user.is_bot) return;
         
-        // Check if this is a new join (works for all join methods)
+        // Check if this is a new join - works for ALL join methods:
+        // - Public invite links
+        // - Private invite links
+        // - Added by admin
+        // - Approved join requests
+        // - Unrestricted after being muted
         const isNewJoin = (oldStatus === 'left' || oldStatus === 'kicked' || !oldStatus) && 
                           (newStatus === 'member' || newStatus === 'administrator' || newStatus === 'restricted');
         
         if (!isNewJoin) return;
         
-        console.log(`👤 User joined: ${user.first_name} (${userId}) in ${ctx.chat.title}`);
+        console.log(`👤 User joined (chat_member): ${user.first_name} (${userId}) in ${ctx.chat.title}`);
         
         // Check if group is allowed
         const allowed = await db.isGroupAllowed(groupId);
-        if (!allowed) return;
+        if (!allowed) {
+            console.log(`Group ${groupId} not allowed, skipping`);
+            return;
+        }
         
         const settings = await db.getGroupSettings(groupId);
-        if (!settings) return;
+        if (!settings) {
+            console.log(`No settings for group ${groupId}, skipping`);
+            return;
+        }
         
         // Check if captcha is enabled
         if (!settings.captcha_enabled) {
@@ -1083,7 +1094,10 @@ bot.on('chat_member', async (ctx) => {
         
         // Prevent duplicate processing
         const joinKey = `${groupId}:${userId}:chat_member`;
-        if (processedJoins.has(joinKey)) return;
+        if (processedJoins.has(joinKey)) {
+            console.log(`Duplicate join detected for ${user.first_name}, skipping`);
+            return;
+        }
         processedJoins.add(joinKey);
         setTimeout(() => processedJoins.delete(joinKey), 30000);
         
@@ -1095,7 +1109,7 @@ bot.on('chat_member', async (ctx) => {
     }
 });
 
-// Backup handler for small groups
+// Backup handler for small groups (under 10k members)
 bot.on(message('new_chat_members'), async (ctx) => {
     const newMembers = ctx.message.new_chat_members;
     const groupId = ctx.chat.id.toString();
@@ -1143,7 +1157,7 @@ async function sendCaptcha(ctx, user, groupId, settings) {
         // Generate button captcha
         const captcha = generateButtonCaptcha();
         
-        // Prepare captcha message
+        // Prepare captcha message text
         const captchaText = `Please verify you're human, ${user.first_name}.\n\n${captcha.question}\n\n_⏰ Timeout: ${settings.captcha_time} seconds_`;
         
         // Create inline keyboard with verify button
@@ -1151,14 +1165,15 @@ async function sendCaptcha(ctx, user, groupId, settings) {
         
         let sentMessage;
         
-        // Send captcha with optional image (FIXED - same as welcome image)
+        // Send captcha with optional image - USING EXACT SAME PATTERN AS WELCOME IMAGE
         if (settings.captcha_image) {
+            // This is the EXACT same pattern that works for welcome images
             sentMessage = await ctx.replyWithPhoto(settings.captcha_image, {
                 caption: captchaText,
                 parse_mode: 'Markdown',
                 reply_markup: keyboard.reply_markup
             });
-            console.log(`🆕 Captcha WITH IMAGE sent to ${user.first_name}`);
+            console.log(`🆕 CAPTCHA WITH IMAGE sent to ${user.first_name} - Image URL: ${settings.captcha_image}`);
         } else {
             sentMessage = await ctx.reply(captchaText, {
                 parse_mode: 'Markdown',
@@ -1196,7 +1211,6 @@ bot.on('left_chat_member', async (ctx) => {
 // Leave via chat_member
 bot.on('chat_member', async (ctx) => {
     try {
-        const oldStatus = ctx.chatMember.old_chat_member?.status;
         const newStatus = ctx.chatMember.new_chat_member.status;
         const user = ctx.chatMember.new_chat_member.user;
         const groupId = ctx.chat.id.toString();

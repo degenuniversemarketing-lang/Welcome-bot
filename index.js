@@ -12,7 +12,7 @@ const SUPER_ADMIN_ID = process.env.BOT_ADMIN_ID;
 // Simple in-memory session store
 const sessions = new Map();
 
-// Track processed joins (prevent duplicates)
+// Track processed joins
 const processedJoins = new Set();
 
 // Initialize database and start bot
@@ -322,7 +322,7 @@ bot.command('stats', async (ctx) => {
     
     let message = `📊 **Bot Statistics**\n\n`;
     message += `**Total Groups:** ${stats.totalGroups}\n`;
-    message += `**Pending Captchas:** ${stats.pendingCaptchas}\n\n`;
+    message += **Pending Captchas:** ${stats.pendingCaptchas}\n\n`;
     message += `**Groups List:**\n`;
     
     if (stats.groups.length === 0) {
@@ -369,7 +369,7 @@ bot.start(async (ctx) => {
     }
 });
 
-// ============ INLINE BUTTON HANDLERS - ALL WORKING ============
+// ============ INLINE BUTTON HANDLERS ============
 
 // 📝 Edit Welcome Text
 bot.action(/edit_welcome_([0-9-]+)/, async (ctx) => {
@@ -394,7 +394,7 @@ bot.action(/edit_welcome_([0-9-]+)/, async (ctx) => {
     await ctx.answerCbQuery();
 });
 
-// 🖼️ Edit Captcha Image - FIXED to match welcome image pattern
+// 🖼️ Edit Captcha Image
 bot.action(/edit_captcha_image_([0-9-]+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
@@ -416,7 +416,7 @@ bot.action(/edit_captcha_image_([0-9-]+)/, async (ctx) => {
     await ctx.answerCbQuery();
 });
 
-// 🖼️ Edit Welcome Image - THIS WORKS PERFECTLY
+// 🖼️ Edit Welcome Image
 bot.action(/edit_welcome_image_([0-9-]+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
@@ -737,7 +737,7 @@ bot.action(/close_panel_([0-9-]+)/, async (ctx) => {
 });
 
 // ◀️ Back to Main Panel
-bot.action(/back_to_panel_([0-9-]+)/, async (ctx) => {
+bot.action(/back_to_panel_([09-]+)/, async (ctx) => {
     const groupId = ctx.match[1];
     
     if (!await checkGroupAdmin(ctx, groupId, ctx.from.id.toString())) {
@@ -798,7 +798,7 @@ bot.action(/verify_(\d+)/, async (ctx) => {
                 }
             }
             
-            // Send welcome message with optional image (THIS WORKS PERFECTLY)
+            // Send welcome message with optional image
             let welcomeMsg;
             if (settings.welcome_image) {
                 welcomeMsg = await ctx.replyWithPhoto(settings.welcome_image, {
@@ -866,7 +866,7 @@ bot.on('text', async (ctx) => {
         return;
     }
     
-    // Handle waiting for captcha image - FIXED to match welcome image pattern
+    // Handle waiting for captcha image
     if (session.waitingForCaptchaImage) {
         const groupId = session.waitingForCaptchaImage;
         
@@ -882,6 +882,7 @@ bot.on('text', async (ctx) => {
         
         const url = ctx.message.text.trim();
         if (url.startsWith('http://') || url.startsWith('https://')) {
+            // FIXED: Save to captcha_image, NOT welcome_text
             await db.updateGroupSettings(groupId, { captcha_image: url });
             delete session.waitingForCaptchaImage;
             await ctx.reply('✅ Captcha image URL saved!');
@@ -895,7 +896,7 @@ bot.on('text', async (ctx) => {
         return;
     }
     
-    // Handle waiting for welcome image - THIS WORKS PERFECTLY
+    // Handle waiting for welcome image
     if (session.waitingForWelcomeImage) {
         const groupId = session.waitingForWelcomeImage;
         
@@ -1067,7 +1068,7 @@ bot.on('chat_member', async (ctx) => {
         // - Approved join requests
         // - Unrestricted after being muted
         const isNewJoin = (oldStatus === 'left' || oldStatus === 'kicked' || !oldStatus) && 
-                          (newStatus === 'member' || newStatus === 'administrator' || newStatus === 'restricted');
+                          (newStatus === 'member' || newStatus === 'administrator');
         
         if (!isNewJoin) return;
         
@@ -1165,15 +1166,14 @@ async function sendCaptcha(ctx, user, groupId, settings) {
         
         let sentMessage;
         
-        // Send captcha with optional image - USING EXACT SAME PATTERN AS WELCOME IMAGE
+        // Send captcha with optional image
         if (settings.captcha_image) {
-            // This is the EXACT same pattern that works for welcome images
             sentMessage = await ctx.replyWithPhoto(settings.captcha_image, {
                 caption: captchaText,
                 parse_mode: 'Markdown',
                 reply_markup: keyboard.reply_markup
             });
-            console.log(`🆕 CAPTCHA WITH IMAGE sent to ${user.first_name} - Image URL: ${settings.captcha_image}`);
+            console.log(`🆕 CAPTCHA WITH IMAGE sent to ${user.first_name}`);
         } else {
             sentMessage = await ctx.reply(captchaText, {
                 parse_mode: 'Markdown',

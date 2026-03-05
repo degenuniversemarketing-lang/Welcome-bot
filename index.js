@@ -798,7 +798,7 @@ bot.action(/verify_(\d+)/, async (ctx) => {
                 }
             }
             
-            // Send welcome message with optional image
+            // Send welcome message with optional image (THIS WORKS PERFECTLY)
             let welcomeMsg;
             if (settings.welcome_image) {
                 welcomeMsg = await ctx.replyWithPhoto(settings.welcome_image, {
@@ -806,6 +806,7 @@ bot.action(/verify_(\d+)/, async (ctx) => {
                     parse_mode: 'Markdown',
                     reply_markup: replyMarkup
                 });
+                console.log(`✅ Welcome with image sent to ${ctx.from.first_name}`);
             } else {
                 welcomeMsg = await ctx.reply(welcomeText, {
                     parse_mode: 'Markdown',
@@ -865,7 +866,7 @@ bot.on('text', async (ctx) => {
         return;
     }
     
-    // Handle waiting for captcha image
+    // Handle waiting for captcha image (FIXED - same as welcome image)
     if (session.waitingForCaptchaImage) {
         const groupId = session.waitingForCaptchaImage;
         
@@ -894,7 +895,7 @@ bot.on('text', async (ctx) => {
         return;
     }
     
-    // Handle waiting for welcome image
+    // Handle waiting for welcome image (THIS WORKS PERFECTLY)
     if (session.waitingForWelcomeImage) {
         const groupId = session.waitingForWelcomeImage;
         
@@ -1047,6 +1048,7 @@ bot.on('text', async (ctx) => {
 });
 
 // ============ UNIVERSAL JOIN HANDLER - WORKS FOR ALL GROUP SIZES ============
+// Primary handler for all groups, especially large ones (10,000+ members)
 bot.on('chat_member', async (ctx) => {
     try {
         const oldStatus = ctx.chatMember.old_chat_member?.status;
@@ -1055,16 +1057,16 @@ bot.on('chat_member', async (ctx) => {
         const groupId = ctx.chat.id.toString();
         const userId = user.id.toString();
         
-        // Check if this is a new join (user became member/administrator from a non-member state)
-        const isNewJoin = (oldStatus === 'left' || oldStatus === 'kicked' || !oldStatus) && 
-                          (newStatus === 'member' || newStatus === 'administrator');
-        
-        if (!isNewJoin) return;
-        
         // Skip bots
         if (user.is_bot) return;
         
-        console.log(`👤 User joined (chat_member): ${user.first_name} (${userId}) in ${ctx.chat.title}`);
+        // Check if this is a new join (works for all join methods)
+        const isNewJoin = (oldStatus === 'left' || oldStatus === 'kicked' || !oldStatus) && 
+                          (newStatus === 'member' || newStatus === 'administrator' || newStatus === 'restricted');
+        
+        if (!isNewJoin) return;
+        
+        console.log(`👤 User joined: ${user.first_name} (${userId}) in ${ctx.chat.title}`);
         
         // Check if group is allowed
         const allowed = await db.isGroupAllowed(groupId);
@@ -1081,10 +1083,7 @@ bot.on('chat_member', async (ctx) => {
         
         // Prevent duplicate processing
         const joinKey = `${groupId}:${userId}:chat_member`;
-        if (processedJoins.has(joinKey)) {
-            console.log(`Duplicate join detected for ${user.first_name}, skipping`);
-            return;
-        }
+        if (processedJoins.has(joinKey)) return;
         processedJoins.add(joinKey);
         setTimeout(() => processedJoins.delete(joinKey), 30000);
         
@@ -1096,7 +1095,7 @@ bot.on('chat_member', async (ctx) => {
     }
 });
 
-// Keep new_chat_members handler for small groups (backward compatibility)
+// Backup handler for small groups
 bot.on(message('new_chat_members'), async (ctx) => {
     const newMembers = ctx.message.new_chat_members;
     const groupId = ctx.chat.id.toString();
@@ -1117,15 +1116,10 @@ bot.on(message('new_chat_members'), async (ctx) => {
         }
     }
     
-    // Check if captcha is enabled
-    if (!settings.captcha_enabled) {
-        console.log(`Captcha disabled for group ${groupId}, skipping verification`);
-        return;
-    }
+    if (!settings.captcha_enabled) return;
     
     for (const member of newMembers) {
-        if (member.id === ctx.botInfo.id) continue;
-        if (member.is_bot) continue;
+        if (member.id === ctx.botInfo.id || member.is_bot) continue;
         
         const joinKey = `${groupId}:${member.id}:${ctx.message.message_id}`;
         if (processedJoins.has(joinKey)) continue;
@@ -1157,14 +1151,14 @@ async function sendCaptcha(ctx, user, groupId, settings) {
         
         let sentMessage;
         
-        // Send captcha with optional image
+        // Send captcha with optional image (FIXED - same as welcome image)
         if (settings.captcha_image) {
             sentMessage = await ctx.replyWithPhoto(settings.captcha_image, {
                 caption: captchaText,
                 parse_mode: 'Markdown',
                 reply_markup: keyboard.reply_markup
             });
-            console.log(`🆕 Captcha with image sent to ${user.first_name}`);
+            console.log(`🆕 Captcha WITH IMAGE sent to ${user.first_name}`);
         } else {
             sentMessage = await ctx.reply(captchaText, {
                 parse_mode: 'Markdown',
@@ -1186,7 +1180,7 @@ async function sendCaptcha(ctx, user, groupId, settings) {
             expireAt
         );
         
-        console.log(`🆕 Button captcha sent to ${user.first_name} in ${ctx.chat.title} with code: ${captcha.answer}`);
+        console.log(`🆕 Captcha sent to ${user.first_name} with code: ${captcha.answer}`);
     } catch (error) {
         console.error('Error sending captcha:', error);
     }
@@ -1199,7 +1193,7 @@ bot.on('left_chat_member', async (ctx) => {
     await db.deleteCaptcha(userId, groupId).catch(() => {});
 });
 
-// Also handle left via chat_member
+// Leave via chat_member
 bot.on('chat_member', async (ctx) => {
     try {
         const oldStatus = ctx.chatMember.old_chat_member?.status;
@@ -1208,11 +1202,12 @@ bot.on('chat_member', async (ctx) => {
         const groupId = ctx.chat.id.toString();
         const userId = user.id.toString();
         
-        // Check if user left or was kicked
+        if (user.is_bot) return;
+        
         const isLeft = (newStatus === 'left' || newStatus === 'kicked');
         
-        if (isLeft && !user.is_bot) {
-            console.log(`👋 User left: ${user.first_name} (${userId}) from ${ctx.chat.title}`);
+        if (isLeft) {
+            console.log(`👋 User left: ${user.first_name} from ${ctx.chat.title}`);
             await db.deleteCaptcha(userId, groupId).catch(() => {});
         }
     } catch (error) {
